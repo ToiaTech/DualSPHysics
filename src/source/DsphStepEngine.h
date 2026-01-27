@@ -17,6 +17,12 @@
 */
 
 /// \file DsphStepEngine.h \brief GPU-based SPH stepping engine for DLL API.
+///
+/// This engine provides full SPH simulation capabilities including:
+/// - Cell division for neighbor search
+/// - SPH force computation (pressure, viscosity, density diffusion)
+/// - Verlet and Symplectic time integration
+/// - Dynamic boundary conditions (DBC/mDBC)
 
 #ifndef _DsphStepEngine_
 #define _DsphStepEngine_
@@ -25,7 +31,10 @@
 
 #include "DualSphDef.h"
 #include "JCellDivGpuSingle.h"
+#include "JCellDivDataGpu.h"
+#include "JSphGpu_cte.h"
 #include "JArraysGpu.h"
+#include "FunSphKernelsCfg.h"
 #include <cuda_runtime.h>
 
 //==============================================================================
@@ -39,26 +48,34 @@ struct StDsphEngineConfig {
   // Simulation parameters
   double dp;                    // Particle spacing
   tfloat3 gravity;              // Gravity vector
-  TpKernel kernel;              // Kernel type
+  TpKernel kernel;              // Kernel type (KERNEL_Cubic, KERNEL_Wendland)
   TpVisco visco;                // Viscosity type
   float viscoValue;             // Viscosity coefficient
   float viscoBoundFactor;       // Boundary viscosity factor
-  TpStep stepMethod;            // Time stepping method
+  TpStep stepMethod;            // Time stepping method (STEP_Verlet, STEP_Symplectic)
   double cfl;                   // CFL number
-  TpBoundary boundary;          // Boundary method
+  TpBoundary boundary;          // Boundary method (BC_DBC, BC_MDBC)
   TpDensity density;            // Density diffusion type
   float ddtValue;               // DDT coefficient
-  float rho0;                   // Reference density
-  float cs0;                    // Speed of sound
-  float gamma;                  // Polytropic constant
+  float rho0;                   // Reference density [kg/m3]
+  float cs0;                    // Speed of sound [m/s] (0 = auto-calculate)
+  float gamma;                  // Polytropic constant (7 for water)
   bool simulate2D;              // 2D mode
-  double simulate2DPosY;        // Y position for 2D
+  double simulate2DPosY;        // Y position for 2D plane
 
-  // Computed constants
-  float kernelH;
-  float kernelSize;
-  float massFluid;
-  float massBound;
+  // Computed constants (filled by ComputeConstants)
+  float kernelH;                // Smoothing length
+  float kernelSize;             // Kernel support radius (2h)
+  float kernelSize2;            // kernelSize^2
+  float massFluid;              // Fluid particle mass
+  float massBound;              // Boundary particle mass
+  float eta2;                   // (0.1*h)^2 for viscosity
+  float cteB;                   // Pressure constant B
+  float movLimit;               // Maximum movement limit
+  float ddtkh;                  // DDT constant
+  float ddtgz;                  // DDT gravity constant
+  fsph::StKCubicCte kcubic;     // Cubic kernel constants
+  fsph::StKWendlandCte kwend;   // Wendland kernel constants
 
   StDsphEngineConfig() { Reset(); }
 
@@ -77,14 +94,20 @@ struct StDsphEngineConfig {
     density = DDT_DDT2;
     ddtValue = 0.1f;
     rho0 = 1000.0f;
-    cs0 = 0.0f;  // Auto-calculate
+    cs0 = 0.0f;
     gamma = 7.0f;
     simulate2D = false;
     simulate2DPosY = 0.0;
     kernelH = 0;
     kernelSize = 0;
+    kernelSize2 = 0;
     massFluid = 0;
     massBound = 0;
+    eta2 = 0;
+    cteB = 0;
+    movLimit = 0;
+    ddtkh = 0;
+    ddtgz = 0;
   }
 };
 
@@ -103,7 +126,7 @@ struct StDsphExternalBuffer {
 
 //==============================================================================
 /// GPU-based SPH stepping engine
-/// Manages particle data and performs simulation steps using CUDA kernels.
+/// Manages particle data and performs full SPH simulation steps using CUDA.
 //==============================================================================
 class DsphStepEngine {
 private:
@@ -118,66 +141,88 @@ private:
   // Particle counts
   unsigned int Np;              // Total particles
   unsigned int Npb;             // Boundary particles
+  unsigned int NpbOk;           // Valid boundary particles
   unsigned int Npf;             // Fluid particles
 
   // Domain configuration
-  tdouble3 MapPosMin;
-  tdouble3 MapPosMax;
-  tuint3 MapCells;
-  unsigned int CellCode;
+  tdouble3 MapPosMin;           // Map minimum position
+  tdouble3 MapPosMax;           // Map maximum position
+  tdouble3 MapRealPosMin;       // Real map minimum
+  tdouble3 MapRealSize;         // Real map size
+  tuint3 MapCells;              // Number of cells in each dimension
+  unsigned int DomCellCode;     // Domain cell encoding
+  tdouble3 DomPosMin;           // Domain minimum position
   float Scell;                  // Cell size
+  float PosCellSize;            // Position cell size
 
-  // GPU Arrays (managed by JArraysGpu)
-  JArraysGpu* ArraysGpu;
+  // Cell division
+  JCellDivGpuSingle* CellDivSingle;
+  StDivDataGpu DivData;
 
-  // Core particle data (GPU pointers)
+  // GPU memory for particle data
+  // Core arrays
   unsigned int* Idpg;           // Particle IDs
   typecode* Codeg;              // Particle type codes
   double2* Posxyg;              // Positions XY
   double* Poszg;                // Position Z
   float4* Velrhog;              // Velocities + density (vx,vy,vz,rho)
-  float4* PosCellg;             // Position within cell (for neighbor search)
+  float4* PosCellg;             // Position within cell
   unsigned int* Dcellg;         // Cell indices
 
-  // Temporary arrays for force computation
+  // Force computation arrays
   float3* Aceg;                 // Accelerations
-  float* ViscDtg;               // Viscous timestep contributions
-  float* Arg;                   // Density time derivative (DDT)
-  float4* ShiftPosfsg;          // Shifting data
+  float* ViscDtg;               // Viscous timestep
+  float* Arg;                   // Density rate (drho/dt)
+  float* Deltag;                // Delta-SPH term
+  float4* ShiftPosfsg;          // Shifting positions
+
+  // Movement arrays
+  double2* Movxyg;              // Movement XY (per step)
+  double* Movzg;                // Movement Z
 
   // For Symplectic scheme
   double2* PosxyPreg;           // Predictor positions XY
   double* PoszPreg;             // Predictor position Z
   float4* VelrhoPreg;           // Predictor velocities + density
 
-  // Cell division
-  JCellDivGpuSingle* CellDiv;
+  // For Verlet scheme
+  float4* VelrhoM1g;            // Previous step velocities
+
+  // Auxiliary memory for reductions
+  float* AuxMemg;
+  unsigned int AuxMemSize;
 
   // Simulation state
   double TimeStep;              // Current simulation time
   unsigned int StepCount;       // Number of steps performed
   double LastDt;                // Last timestep used
   int VerletStep;               // Verlet step counter
+  float ViscDtMax;              // Maximum viscous dt
+  float AceMax;                 // Maximum acceleration
 
   // Private methods
   void AllocateGpuMemory(unsigned int np);
   void FreeGpuMemory();
   void ComputeConstants();
-  void InitializeCellDivision();
+  void SetupCellDivision();
+  void UploadConstants();
   void RunCellDivide(bool updatePeriodic);
-  void UpdatePosCell();
-  void InitAcceleration();
+  void SortParticleArrays();
+
+  // Pre/Post interaction
+  void PreInteraction_Forces();
+  void PosInteraction_Forces();
 
   // Force computation
-  void PreInteraction();
-  void PostInteraction();
-  void ComputeForces();
+  void Interaction_Forces();
+  float ComputeViscDtMax();
+  float ComputeAceMax();
 
   // Position/velocity update
-  double ComputeDt();
-  void ComputeVerletStep(double dt);
-  void ComputeSymplecticPredictor(double dt);
-  void ComputeSymplecticCorrector(double dt);
+  double ComputeDtVariable();
+  void ComputeStepVerlet(double dt);
+  void ComputeStepSymplectic(double dt);
+  void ComputeStepPos(double dt);
 
   // External buffer
   void CopyToExternalBufferInternal();
@@ -187,15 +232,6 @@ public:
   ~DsphStepEngine();
 
   /// Initialize the engine with configuration and particle data.
-  /// @param config Simulation configuration
-  /// @param fluidPos Fluid particle positions [x0,y0,z0,x1,y1,z1,...] (npf*3)
-  /// @param fluidVel Fluid particle velocities (can be nullptr for zero)
-  /// @param npf Number of fluid particles
-  /// @param boundPos Boundary particle positions (npb*3)
-  /// @param boundNormals Boundary normals for mDBC (can be nullptr)
-  /// @param npb Number of boundary particles
-  /// @param stream CUDA stream to use (nullptr for default)
-  /// @return true on success
   bool Initialize(const StDsphEngineConfig& config,
                   const double* fluidPos, const double* fluidVel, unsigned int npf,
                   const double* boundPos, const double* boundNormals, unsigned int npb,
@@ -216,14 +252,10 @@ public:
   /// Compute recommended timestep based on CFL condition.
   double ComputeTimeStep();
 
-  /// Perform a single simulation step.
-  /// @param dt Timestep to use
-  /// @return true on success
+  /// Perform a single simulation step (synchronous).
   bool Step(double dt);
 
   /// Perform a single step asynchronously.
-  /// @param dt Timestep to use
-  /// @return true on success
   bool StepAsync(double dt);
 
   /// Synchronize (wait for async operations to complete).
@@ -238,16 +270,16 @@ public:
   /// Get number of steps performed.
   unsigned int GetStepCount() const { return StepCount; }
 
-  /// Get particle count.
+  /// Get fluid particle count.
   unsigned int GetParticleCount() const { return Npf; }
 
   /// Get total particle count (including boundaries).
   unsigned int GetTotalParticleCount() const { return Np; }
 
-  /// Copy positions from GPU to CPU buffer.
+  /// Copy positions from GPU to CPU buffer (interleaved xyz).
   void GetPositions(float* outPositions, unsigned int count);
 
-  /// Copy velocities from GPU to CPU buffer.
+  /// Copy velocities from GPU to CPU buffer (interleaved xyz).
   void GetVelocities(float* outVelocities, unsigned int count);
 
   /// Copy densities from GPU to CPU buffer.
