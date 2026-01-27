@@ -28,13 +28,13 @@ set(OBSPH JArraysCpu.cpp JCellDivCpu.cpp JDebugSphCpu.cpp JSphCfgRun.cpp JComput
 set(OBSPHSINGLE JCellDivCpuSingle.cpp JPartsLoad4.cpp JSphCpuSingle.cpp)
 
 # DLL API source (for shared library build)
-set(OBDLLAPI DualSPHysicsAPI.cpp)
+set(OBDLLAPI DualSPHysicsAPI.cpp DsphStepEngine.cpp)
 
 # GPU Objects
 set(OBCOMMONGPU FunctionsCuda.cpp JObjectGpu.cpp)
 set(OBSPHGPU JArraysGpu.cpp JDebugSphGpu.cpp JCellDivGpu.cpp JSphGpu.cpp JDsGpuInfo.cpp)
 set(OBSPHSINGLEGPU JCellDivGpuSingle.cpp JSphGpuSingle.cpp)
-set(OBCUDA JCellDivGpu_ker.cu JCellDivGpuSingle_ker.cu JDsPips_ker.cu JDsGauge_ker.cu JReduSum_ker.cu JSphShifting_ker.cu JDsAccInput_ker.cu JSphGpu_ker.cu JSphGpuSimple_ker.cu JWaveOrder2_ker.cu)
+set(OBCUDA JCellDivGpu_ker.cu JCellDivGpuSingle_ker.cu JDsPips_ker.cu JDsGauge_ker.cu JReduSum_ker.cu JSphShifting_ker.cu JDsAccInput_ker.cu JSphGpu_ker.cu JSphGpuSimple_ker.cu JWaveOrder2_ker.cu DsphStepEngine_ker.cu)
 set(OBVRESGPU JSphGpuSingle_VRes.cpp)
 set(OBWAVERZGPU JMLPistonsGpu.cpp JRelaxZonesGpu.cpp)
 set(OBINOUTGPU JSphGpuSingle_InOut.cpp)

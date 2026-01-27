@@ -31,6 +31,7 @@
 #ifdef _WITHGPU
   #include "JSphGpuSingle.h"
   #include "FunctionsCuda.h"
+  #include "DsphStepEngine.h"
   #include <cuda_runtime.h>
 #endif
 
@@ -167,26 +168,9 @@ struct DsphSimulation_ {
   void* cudaStream;
   bool ownsStream;
 
-  // Internal DualSPHysics objects (created on Prepare)
-  // These will be managed by the actual simulation engine
-  // For now, we store the computed SPH constants
-  float kernelH;
-  float kernelSize;
-  float massFluid;
-  float massBound;
-  float cs0;  // Speed of sound
-
-  // GPU particle arrays (pointers to GPU memory)
+  // SPH Step Engine (manages GPU simulation)
 #ifdef _WITHGPU
-  double* gpu_posX;
-  double* gpu_posY;
-  double* gpu_posZ;
-  float* gpu_velX;
-  float* gpu_velY;
-  float* gpu_velZ;
-  float* gpu_rho;
-  unsigned int* gpu_idp;
-  unsigned int allocatedParticles;
+  DsphStepEngine* stepEngine;
 #endif
 
   unsigned int totalParticles;
@@ -201,21 +185,8 @@ struct DsphSimulation_ {
     stepCount(0),
     cudaStream(nullptr),
     ownsStream(false),
-    kernelH(0),
-    kernelSize(0),
-    massFluid(0),
-    massBound(0),
-    cs0(0),
 #ifdef _WITHGPU
-    gpu_posX(nullptr),
-    gpu_posY(nullptr),
-    gpu_posZ(nullptr),
-    gpu_velX(nullptr),
-    gpu_velY(nullptr),
-    gpu_velZ(nullptr),
-    gpu_rho(nullptr),
-    gpu_idp(nullptr),
-    allocatedParticles(0),
+    stepEngine(nullptr),
 #endif
     totalParticles(0),
     fluidParticles(0),
@@ -223,26 +194,17 @@ struct DsphSimulation_ {
   {}
 
   ~DsphSimulation_() {
-    FreeGpuMemory();
+#ifdef _WITHGPU
+    if(stepEngine) {
+      delete stepEngine;
+      stepEngine = nullptr;
+    }
+#endif
     if(ownsStream && cudaStream) {
 #ifdef _WITHGPU
       cudaStreamDestroy(static_cast<cudaStream_t>(cudaStream));
 #endif
     }
-  }
-
-  void FreeGpuMemory() {
-#ifdef _WITHGPU
-    if(gpu_posX) { cudaFree(gpu_posX); gpu_posX = nullptr; }
-    if(gpu_posY) { cudaFree(gpu_posY); gpu_posY = nullptr; }
-    if(gpu_posZ) { cudaFree(gpu_posZ); gpu_posZ = nullptr; }
-    if(gpu_velX) { cudaFree(gpu_velX); gpu_velX = nullptr; }
-    if(gpu_velY) { cudaFree(gpu_velY); gpu_velY = nullptr; }
-    if(gpu_velZ) { cudaFree(gpu_velZ); gpu_velZ = nullptr; }
-    if(gpu_rho) { cudaFree(gpu_rho); gpu_rho = nullptr; }
-    if(gpu_idp) { cudaFree(gpu_idp); gpu_idp = nullptr; }
-    allocatedParticles = 0;
-#endif
   }
 };
 
@@ -441,7 +403,14 @@ DUALSPH_CAPI int DsphResetSimulation(DsphSimHandle handle) {
     return DSPH_ERROR_INVALID_PARAM;
   }
 
-  handle->FreeGpuMemory();
+#ifdef _WITHGPU
+  if(handle->stepEngine) {
+    handle->stepEngine->Shutdown();
+    delete handle->stepEngine;
+    handle->stepEngine = nullptr;
+  }
+#endif
+
   handle->particles.Clear();
   handle->prepared = false;
   handle->simulationTime = 0.0;
@@ -935,32 +904,6 @@ DUALSPH_CAPI int DsphPrepare(DsphSimHandle handle) {
       return DSPH_ERROR_INVALID_STATE;
     }
 
-    // Calculate SPH constants
-    double dp = cfg.dp;
-    double coefH = (cfg.kernelType == DSPH_KERNEL_WENDLAND) ?
-                   fsph::GetKernelWendlandFactorH() : fsph::GetKernelCubicFactorH();
-    double coefK = (cfg.kernelType == DSPH_KERNEL_WENDLAND) ?
-                   fsph::GetKernelWendlandFactorK() : fsph::GetKernelCubicFactorK();
-
-    handle->kernelH = static_cast<float>(coefH * sqrt(3.0 * dp * dp));
-    handle->kernelSize = static_cast<float>(coefK * handle->kernelH);
-
-    // Mass calculation (assuming uniform particle distribution)
-    double volume = dp * dp * dp;
-    handle->massFluid = static_cast<float>(cfg.rho0 * volume);
-    handle->massBound = handle->massFluid;
-
-    // Speed of sound
-    if(cfg.speedOfSound > 0) {
-      handle->cs0 = static_cast<float>(cfg.speedOfSound);
-    } else {
-      // Auto-calculate based on expected max velocity
-      // Using 10x safety factor on expected gravity-driven velocity
-      double domainHeight = cfg.domainMaxZ - cfg.domainMinZ;
-      double vMax = sqrt(2.0 * fabs(cfg.gravity[2]) * domainHeight);
-      handle->cs0 = static_cast<float>(10.0 * std::max(vMax, 1.0));
-    }
-
     // Store particle counts
     handle->fluidParticles = handle->particles.FluidCount();
     handle->boundaryParticles = handle->particles.BoundaryCount();
@@ -970,63 +913,58 @@ DUALSPH_CAPI int DsphPrepare(DsphSimHandle handle) {
     if(handle->deviceType == DSPH_DEVICE_GPU) {
       cudaSetDevice(handle->gpuId);
 
-      // Allocate GPU arrays
-      unsigned int np = handle->totalParticles;
-      handle->allocatedParticles = np;
+      // Create step engine configuration
+      StDsphEngineConfig engineConfig;
+      engineConfig.domainMin = TDouble3(cfg.domainMinX, cfg.domainMinY, cfg.domainMinZ);
+      engineConfig.domainMax = TDouble3(cfg.domainMaxX, cfg.domainMaxY, cfg.domainMaxZ);
+      engineConfig.dp = cfg.dp;
+      engineConfig.gravity = TFloat3(float(cfg.gravity[0]), float(cfg.gravity[1]), float(cfg.gravity[2]));
+      engineConfig.kernel = (cfg.kernelType == DSPH_KERNEL_WENDLAND) ? KERNEL_Wendland : KERNEL_Cubic;
+      engineConfig.visco = (cfg.viscoType == DSPH_VISCO_ARTIFICIAL) ? VISCO_Artificial :
+                           (cfg.viscoType == DSPH_VISCO_LAMINAR) ? VISCO_LaminarSPS : VISCO_LaminarSPS;
+      engineConfig.viscoValue = float(cfg.viscoValue);
+      engineConfig.viscoBoundFactor = float(cfg.viscoBoundFactor);
+      engineConfig.stepMethod = (cfg.stepMethod == DSPH_STEP_VERLET) ? STEP_Verlet : STEP_Symplectic;
+      engineConfig.cfl = cfg.cfl;
+      engineConfig.boundary = (cfg.boundaryMethod == DSPH_BOUNDARY_MDBC) ? BC_MDBC : BC_DBC;
+      engineConfig.density = (TpDensity)cfg.ddtType;
+      engineConfig.ddtValue = float(cfg.ddtValue);
+      engineConfig.rho0 = float(cfg.rho0);
+      engineConfig.cs0 = float(cfg.speedOfSound);
+      engineConfig.simulate2D = cfg.simulate2D;
+      engineConfig.simulate2DPosY = cfg.simulate2DPosY;
 
-      cudaMalloc(&handle->gpu_posX, np * sizeof(double));
-      cudaMalloc(&handle->gpu_posY, np * sizeof(double));
-      cudaMalloc(&handle->gpu_posZ, np * sizeof(double));
-      cudaMalloc(&handle->gpu_velX, np * sizeof(float));
-      cudaMalloc(&handle->gpu_velY, np * sizeof(float));
-      cudaMalloc(&handle->gpu_velZ, np * sizeof(float));
-      cudaMalloc(&handle->gpu_rho, np * sizeof(float));
-      cudaMalloc(&handle->gpu_idp, np * sizeof(unsigned int));
-
-      // Upload boundary particles first (they have lower indices)
-      // Then fluid particles
-      std::vector<double> posX(np), posY(np), posZ(np);
-      std::vector<float> velX(np), velY(np), velZ(np);
-      std::vector<float> rho(np, static_cast<float>(cfg.rho0));
-      std::vector<unsigned int> idp(np);
-
-      unsigned int idx = 0;
-
-      // Boundary particles
-      for(unsigned int i = 0; i < handle->boundaryParticles; i++) {
-        posX[idx] = handle->particles.boundaryPositions[i * 3 + 0];
-        posY[idx] = handle->particles.boundaryPositions[i * 3 + 1];
-        posZ[idx] = handle->particles.boundaryPositions[i * 3 + 2];
-        velX[idx] = 0.0f;
-        velY[idx] = 0.0f;
-        velZ[idx] = 0.0f;
-        idp[idx] = idx;
-        idx++;
-      }
-
-      // Fluid particles
-      for(unsigned int i = 0; i < handle->fluidParticles; i++) {
-        posX[idx] = handle->particles.fluidPositions[i * 3 + 0];
-        posY[idx] = handle->particles.fluidPositions[i * 3 + 1];
-        posZ[idx] = handle->particles.fluidPositions[i * 3 + 2];
-        velX[idx] = static_cast<float>(handle->particles.fluidVelocities[i * 3 + 0]);
-        velY[idx] = static_cast<float>(handle->particles.fluidVelocities[i * 3 + 1]);
-        velZ[idx] = static_cast<float>(handle->particles.fluidVelocities[i * 3 + 2]);
-        idp[idx] = idx;
-        idx++;
-      }
+      // Create and initialize step engine
+      handle->stepEngine = new DsphStepEngine();
 
       cudaStream_t stream = static_cast<cudaStream_t>(handle->cudaStream);
-      cudaMemcpyAsync(handle->gpu_posX, posX.data(), np * sizeof(double), cudaMemcpyHostToDevice, stream);
-      cudaMemcpyAsync(handle->gpu_posY, posY.data(), np * sizeof(double), cudaMemcpyHostToDevice, stream);
-      cudaMemcpyAsync(handle->gpu_posZ, posZ.data(), np * sizeof(double), cudaMemcpyHostToDevice, stream);
-      cudaMemcpyAsync(handle->gpu_velX, velX.data(), np * sizeof(float), cudaMemcpyHostToDevice, stream);
-      cudaMemcpyAsync(handle->gpu_velY, velY.data(), np * sizeof(float), cudaMemcpyHostToDevice, stream);
-      cudaMemcpyAsync(handle->gpu_velZ, velZ.data(), np * sizeof(float), cudaMemcpyHostToDevice, stream);
-      cudaMemcpyAsync(handle->gpu_rho, rho.data(), np * sizeof(float), cudaMemcpyHostToDevice, stream);
-      cudaMemcpyAsync(handle->gpu_idp, idp.data(), np * sizeof(unsigned int), cudaMemcpyHostToDevice, stream);
 
-      cudaStreamSynchronize(stream);
+      bool success = handle->stepEngine->Initialize(
+        engineConfig,
+        handle->particles.fluidPositions.data(),
+        handle->particles.fluidVelocities.empty() ? nullptr : handle->particles.fluidVelocities.data(),
+        handle->fluidParticles,
+        handle->particles.boundaryPositions.empty() ? nullptr : handle->particles.boundaryPositions.data(),
+        handle->particles.boundaryNormals.empty() ? nullptr : handle->particles.boundaryNormals.data(),
+        handle->boundaryParticles,
+        stream
+      );
+
+      if(!success) {
+        delete handle->stepEngine;
+        handle->stepEngine = nullptr;
+        SetError("Failed to initialize step engine");
+        return DSPH_ERROR_SIMULATION;
+      }
+
+      // Set external buffer if configured
+      if(handle->externalBuffer.enabled) {
+        handle->stepEngine->SetExternalBuffer(
+          handle->externalBuffer.cudaDevicePtr,
+          handle->externalBuffer.maxParticles,
+          handle->externalBuffer.writeFluidOnly
+        );
+      }
     }
 #endif
 
@@ -1060,17 +998,15 @@ DUALSPH_CAPI int DsphComputeTimeStep(DsphSimHandle handle, double* outDt) {
     return DSPH_ERROR_NOT_PREPARED;
   }
 
-  // CFL condition: dt = CFL * h / (cs + vmax)
-  // For now, use a simplified estimate
-  double h = handle->kernelH;
-  double cs = handle->cs0;
-  double cfl = handle->config.cfl;
+#ifdef _WITHGPU
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    *outDt = handle->stepEngine->ComputeTimeStep();
+    return DSPH_SUCCESS;
+  }
+#endif
 
-  // TODO: Compute actual vmax from particle velocities
-  double vmax = 1.0;  // Placeholder
-
-  *outDt = cfl * h / (cs + vmax);
-
+  // CPU fallback (simplified estimate)
+  *outDt = 0.0001;  // Conservative default
   return DSPH_SUCCESS;
 }
 
@@ -1095,19 +1031,30 @@ DUALSPH_CAPI int DsphStepAsync(DsphSimHandle handle, double dt) {
   }
 
   try {
-    // TODO: Implement actual SPH step using DualSPHysics kernels
-    // This requires deeper integration with the JSphGpu internals
-    // For now, this is a placeholder that updates time
+#ifdef _WITHGPU
+    if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+      bool success = handle->stepEngine->StepAsync(dt);
+      if(!success) {
+        SetError("Step engine step failed");
+        return DSPH_ERROR_SIMULATION;
+      }
 
-    handle->simulationTime += dt;
-    handle->stepCount++;
+      // Update local counters from engine
+      handle->simulationTime = handle->stepEngine->GetSimulationTime();
+      handle->stepCount = handle->stepEngine->GetStepCount();
 
-    // Copy to external buffer if configured
-    if(handle->externalBuffer.enabled) {
-      DsphCopyToExternalBuffer(handle);
+      // Copy to external buffer if configured (async)
+      if(handle->externalBuffer.enabled) {
+        handle->stepEngine->CopyToExternalBuffer();
+      }
+
+      return DSPH_SUCCESS;
     }
+#endif
 
-    return DSPH_SUCCESS;
+    // CPU fallback (not implemented)
+    SetError("CPU simulation not yet implemented");
+    return DSPH_ERROR_NOT_IMPLEMENTED;
   }
   catch(const std::exception& e) {
     SetError(std::string("Step failed: ") + e.what());
@@ -1122,8 +1069,8 @@ DUALSPH_CAPI int DsphSynchronize(DsphSimHandle handle) {
   }
 
 #ifdef _WITHGPU
-  if(handle->deviceType == DSPH_DEVICE_GPU && handle->cudaStream) {
-    cudaStreamSynchronize(static_cast<cudaStream_t>(handle->cudaStream));
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    handle->stepEngine->Synchronize();
   }
 #endif
 
@@ -1178,26 +1125,14 @@ DUALSPH_CAPI int DsphGetPositions(DsphSimHandle handle, float* outPositions, uns
   }
 
 #ifdef _WITHGPU
-  if(handle->deviceType == DSPH_DEVICE_GPU) {
-    // Download from GPU - need to convert from separate arrays to interleaved
-    std::vector<double> posX(count), posY(count), posZ(count);
-    unsigned int offset = handle->boundaryParticles;  // Fluid particles start after boundary
-
-    cudaStream_t stream = static_cast<cudaStream_t>(handle->cudaStream);
-    cudaMemcpyAsync(posX.data(), handle->gpu_posX + offset, count * sizeof(double), cudaMemcpyDeviceToHost, stream);
-    cudaMemcpyAsync(posY.data(), handle->gpu_posY + offset, count * sizeof(double), cudaMemcpyDeviceToHost, stream);
-    cudaMemcpyAsync(posZ.data(), handle->gpu_posZ + offset, count * sizeof(double), cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream);
-
-    for(unsigned int i = 0; i < count; i++) {
-      outPositions[i * 3 + 0] = static_cast<float>(posX[i]);
-      outPositions[i * 3 + 1] = static_cast<float>(posY[i]);
-      outPositions[i * 3 + 2] = static_cast<float>(posZ[i]);
-    }
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    handle->stepEngine->GetPositions(outPositions, count);
+    return DSPH_SUCCESS;
   }
 #endif
 
-  return DSPH_SUCCESS;
+  SetError("CPU simulation not yet implemented");
+  return DSPH_ERROR_NOT_IMPLEMENTED;
 }
 
 DUALSPH_CAPI int DsphGetPositionsDouble(DsphSimHandle handle, double* outPositions, unsigned int count) {
@@ -1215,25 +1150,19 @@ DUALSPH_CAPI int DsphGetPositionsDouble(DsphSimHandle handle, double* outPositio
   }
 
 #ifdef _WITHGPU
-  if(handle->deviceType == DSPH_DEVICE_GPU) {
-    std::vector<double> posX(count), posY(count), posZ(count);
-    unsigned int offset = handle->boundaryParticles;
-
-    cudaStream_t stream = static_cast<cudaStream_t>(handle->cudaStream);
-    cudaMemcpyAsync(posX.data(), handle->gpu_posX + offset, count * sizeof(double), cudaMemcpyDeviceToHost, stream);
-    cudaMemcpyAsync(posY.data(), handle->gpu_posY + offset, count * sizeof(double), cudaMemcpyDeviceToHost, stream);
-    cudaMemcpyAsync(posZ.data(), handle->gpu_posZ + offset, count * sizeof(double), cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream);
-
-    for(unsigned int i = 0; i < count; i++) {
-      outPositions[i * 3 + 0] = posX[i];
-      outPositions[i * 3 + 1] = posY[i];
-      outPositions[i * 3 + 2] = posZ[i];
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    // Get positions as float and convert to double
+    std::vector<float> posFloat(count * 3);
+    handle->stepEngine->GetPositions(posFloat.data(), count);
+    for(unsigned int i = 0; i < count * 3; i++) {
+      outPositions[i] = static_cast<double>(posFloat[i]);
     }
+    return DSPH_SUCCESS;
   }
 #endif
 
-  return DSPH_SUCCESS;
+  SetError("CPU simulation not yet implemented");
+  return DSPH_ERROR_NOT_IMPLEMENTED;
 }
 
 DUALSPH_CAPI int DsphGetVelocities(DsphSimHandle handle, float* outVelocities, unsigned int count) {
@@ -1251,25 +1180,14 @@ DUALSPH_CAPI int DsphGetVelocities(DsphSimHandle handle, float* outVelocities, u
   }
 
 #ifdef _WITHGPU
-  if(handle->deviceType == DSPH_DEVICE_GPU) {
-    std::vector<float> velX(count), velY(count), velZ(count);
-    unsigned int offset = handle->boundaryParticles;
-
-    cudaStream_t stream = static_cast<cudaStream_t>(handle->cudaStream);
-    cudaMemcpyAsync(velX.data(), handle->gpu_velX + offset, count * sizeof(float), cudaMemcpyDeviceToHost, stream);
-    cudaMemcpyAsync(velY.data(), handle->gpu_velY + offset, count * sizeof(float), cudaMemcpyDeviceToHost, stream);
-    cudaMemcpyAsync(velZ.data(), handle->gpu_velZ + offset, count * sizeof(float), cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream);
-
-    for(unsigned int i = 0; i < count; i++) {
-      outVelocities[i * 3 + 0] = velX[i];
-      outVelocities[i * 3 + 1] = velY[i];
-      outVelocities[i * 3 + 2] = velZ[i];
-    }
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    handle->stepEngine->GetVelocities(outVelocities, count);
+    return DSPH_SUCCESS;
   }
 #endif
 
-  return DSPH_SUCCESS;
+  SetError("CPU simulation not yet implemented");
+  return DSPH_ERROR_NOT_IMPLEMENTED;
 }
 
 DUALSPH_CAPI int DsphGetDensities(DsphSimHandle handle, float* outDensities, unsigned int count) {
@@ -1287,15 +1205,14 @@ DUALSPH_CAPI int DsphGetDensities(DsphSimHandle handle, float* outDensities, uns
   }
 
 #ifdef _WITHGPU
-  if(handle->deviceType == DSPH_DEVICE_GPU) {
-    unsigned int offset = handle->boundaryParticles;
-    cudaStream_t stream = static_cast<cudaStream_t>(handle->cudaStream);
-    cudaMemcpyAsync(outDensities, handle->gpu_rho + offset, count * sizeof(float), cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream);
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    handle->stepEngine->GetDensities(outDensities, count);
+    return DSPH_SUCCESS;
   }
 #endif
 
-  return DSPH_SUCCESS;
+  SetError("CPU simulation not yet implemented");
+  return DSPH_ERROR_NOT_IMPLEMENTED;
 }
 
 DUALSPH_CAPI int DsphCopyToExternalBuffer(DsphSimHandle handle) {
@@ -1313,26 +1230,14 @@ DUALSPH_CAPI int DsphCopyToExternalBuffer(DsphSimHandle handle) {
   }
 
 #ifdef _WITHGPU
-  if(handle->deviceType == DSPH_DEVICE_GPU) {
-    unsigned int count = handle->externalBuffer.writeFluidOnly ?
-                         handle->fluidParticles : handle->totalParticles;
-
-    if(count > handle->externalBuffer.maxParticles) {
-      SetError("External buffer too small");
-      return DSPH_ERROR_BUFFER_TOO_SMALL;
-    }
-
-    // TODO: Implement efficient GPU kernel to copy data to external buffer
-    // in DsphParticleData format (interleaved pos, density, vel, pressure)
-    // For now, this is a placeholder
-
-    // The actual implementation would use a CUDA kernel like:
-    // copyToExternalBuffer<<<blocks, threads, 0, stream>>>(
-    //     externalBuffer, posX, posY, posZ, velX, velY, velZ, rho, count);
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    handle->stepEngine->CopyToExternalBuffer();
+    return DSPH_SUCCESS;
   }
 #endif
 
-  return DSPH_SUCCESS;
+  SetError("CPU simulation not yet implemented");
+  return DSPH_ERROR_NOT_IMPLEMENTED;
 }
 
 //==============================================================================

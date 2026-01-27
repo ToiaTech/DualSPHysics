@@ -52,6 +52,7 @@ extern "C" {
 #define DSPH_ERROR_ALREADY_PREPARED -10
 #define DSPH_ERROR_INVALID_STATE  -11
 #define DSPH_ERROR_BUFFER_TOO_SMALL -12
+#define DSPH_ERROR_NOT_IMPLEMENTED -13
 
 //==============================================================================
 // Device Types
