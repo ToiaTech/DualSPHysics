@@ -13,6 +13,7 @@ option(ENABLE_CHRONO "Enable the Chrono Engine library" ON)
 option(ENABLE_WAVEGEN "Enable the WaveGen library" ON)
 option(ENABLE_MOORDYNPLUS "Enable the MoorDynPlus library" ON)
 option(ENABLE_CUDA "Enable the use of CUDA for compilation" ON)
+option(BUILD_DLL "Build DualSPHysics as a shared library (DLL) - Windows only" OFF)
 
 #------------------------------------------------------------------
 # Source files
@@ -25,6 +26,9 @@ set(OBCOMMON Functions.cpp FunGeo3d.cpp FunSphKernelsCfg.cpp JAppInfo.cpp JBinar
 set(OBCOMMONDSPH JDsphConfig.cpp JDsPips.cpp JPartDataBi4.cpp JPartDataHead.cpp JDsPartFloatSave.cpp JDsPartMotionSave.cpp JPartFloatInfoBi4.cpp JPartMotRefBi4Save.cpp JPartOutBi4Save.cpp JCaseCtes.cpp JCaseEParms.cpp JCaseParts.cpp JCaseProperties.cpp)
 set(OBSPH JArraysCpu.cpp JCellDivCpu.cpp JDebugSphCpu.cpp JSphCfgRun.cpp JComputeMotionRef.cpp JDsDcell.cpp JDsDamping.cpp JDsExtraData.cpp JDsGaugeItem.cpp JDsGaugeSystem.cpp JDsPartsOut.cpp JDsSaveDt.cpp JSphShifting.cpp JSphShiftingAdv.cpp JSph.cpp JDsAccInput.cpp JSphCpu.cpp JSphCpu_mdbc.cpp JSphCpu_preloop.cpp JDsInitialize.cpp JSphMk.cpp JDsOutputParts.cpp JDsPartsInit.cpp JDsFixedDt.cpp JDsViscoInput.cpp JDsOutputTime.cpp JDsTimers.cpp JWaveSpectrumGpu.cpp main.cpp)
 set(OBSPHSINGLE JCellDivCpuSingle.cpp JPartsLoad4.cpp JSphCpuSingle.cpp)
+
+# DLL API source (for shared library build)
+set(OBDLLAPI DualSPHysicsAPI.cpp)
 
 # GPU Objects
 set(OBCOMMONGPU FunctionsCuda.cpp JObjectGpu.cpp)
@@ -143,7 +147,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_dependencies(DualSPHysics5.4_linux64 LibDSphMoorDynPlus)
     install(TARGETS DualSPHysics5.4_linux64 DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
   endif(CUDA_FOUND)
-elseif(MSVC) 
+elseif(MSVC)
   add_executable(DualSPHysics5.4CPU_win64 ${OBJXML} ${OBJSPHMOTION} ${OBCOMMON} ${OBCOMMONDSPH} ${OBSPH} ${OBSPHSINGLE} ${OBWAVERZ} ${OBWAVERZGPU}  ${OBCHRONO} ${OBMOORDYNPLUS} ${OBINOUT} ${OBMESH} ${OBVRES} ${OBFLEXSTRUC})
   add_dependencies(DualSPHysics5.4CPU_win64 LibDSphMoorDynPlus)
   install(TARGETS	DualSPHysics5.4CPU_win64 DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
@@ -152,6 +156,7 @@ elseif(MSVC)
     add_dependencies(DualSPHysics5.4_win64 LibDSphMoorDynPlus)
     install(TARGETS DualSPHysics5.4_win64 DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
   endif(CUDA_FOUND)
+
 endif()
 
 foreach(OUTPUTCONFIG ${CMAKE_CONFIGURATION_TYPES} )
@@ -236,4 +241,58 @@ elseif(MSVC)
       string(REGEX REPLACE "/MD" "/MT" ${CPP_FLAGS} "${${CPP_FLAGS}}")
     endif(${CPP_FLAGS} MATCHES "/MD")
   endforeach(CPP_FLAGS)
+
+  #------------------------------------------------------------------
+  # DLL Build Target (Windows only, with CUDA support)
+  #------------------------------------------------------------------
+  if(BUILD_DLL AND CUDA_FOUND)
+    message(STATUS "Building DualSPHysics as shared library (DLL)")
+
+    # Create list of sources for DLL (exclude main.cpp, include DLL API)
+    set(DLL_SOURCES
+      ${OBJXML} ${OBJSPHMOTION} ${OBCOMMON} ${OBCOMMONDSPH}
+      ${OBCOMMONGPU} ${OBSPHGPU} ${OBSPHSINGLEGPU}
+      ${OBWAVERZ} ${OBWAVERZCUDA} ${OBCHRONO} ${OBMOORDYNPLUS}
+      ${OBINOUT} ${OBINOUTGPU} ${OBVRESGPU} ${OBWAVERZGPU}
+      ${OBMESH} ${OBVRES} ${OBFLEXSTRUC} ${OBDLLAPI}
+    )
+
+    # Add SPH sources but exclude main.cpp
+    foreach(src ${OBSPH})
+      if(NOT ${src} STREQUAL "main.cpp")
+        list(APPEND DLL_SOURCES ${src})
+      endif()
+    endforeach()
+    list(APPEND DLL_SOURCES ${OBSPHSINGLE})
+
+    # Create CUDA shared library
+    cuda_add_library(DualSPHysics SHARED ${DLL_SOURCES} ${OBCUDA})
+    add_dependencies(DualSPHysics LibDSphMoorDynPlus)
+
+    # Set DLL preprocessor definitions
+    target_compile_definitions(DualSPHysics PRIVATE
+      DUALSPHYSICS_DLL
+      DUALSPHYSICS_DLL_EXPORT
+      _WITHMR
+      _WITHGPU
+    )
+
+    # Set output directory for DLL
+    set_target_properties(DualSPHysics PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
+      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
+      ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../lib/vs2022
+    )
+
+    # Link libraries
+    target_link_libraries(DualSPHysics ${LINKER_FLAGS})
+
+    install(TARGETS DualSPHysics
+      RUNTIME DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
+      LIBRARY DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
+      ARCHIVE DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/../lib/vs2022
+    )
+
+    message(STATUS "DLL will be output to: ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+  endif(BUILD_DLL AND CUDA_FOUND)
 endif()
