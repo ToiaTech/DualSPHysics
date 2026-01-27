@@ -17,42 +17,105 @@
 */
 
 /// \file DualSPHysicsAPI.h \brief C-compatible API for DualSPHysics DLL.
+///
+/// This API provides programmatic control over SPH simulations, designed for
+/// integration with external engines (game engines, visualization tools, etc.).
+///
+/// Key features:
+/// - Programmatic simulation setup (no XML files required)
+/// - Fine-grained stepping control for engine integration
+/// - External CUDA buffer injection for zero-copy GPU interop
+/// - CUDA stream access for external synchronization (D3D12 fences, etc.)
 
 #ifndef _DualSPHysicsAPI_
 #define _DualSPHysicsAPI_
 
 #include "DualSPHysicsLib.h"
 
-//==============================================================================
-// Error codes
-//==============================================================================
-#define DSPH_SUCCESS              0
-#define DSPH_ERROR_UNKNOWN       -1
-#define DSPH_ERROR_INVALID_PARAM -2
-#define DSPH_ERROR_NOT_INIT      -3
-#define DSPH_ERROR_ALREADY_INIT  -4
-#define DSPH_ERROR_NO_GPU        -5
-#define DSPH_ERROR_FILE_NOT_FOUND -6
-#define DSPH_ERROR_SIMULATION    -7
-#define DSPH_ERROR_MEMORY        -8
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 //==============================================================================
-// Device types
+// Error Codes
+//==============================================================================
+#define DSPH_SUCCESS               0
+#define DSPH_ERROR_UNKNOWN        -1
+#define DSPH_ERROR_INVALID_PARAM  -2
+#define DSPH_ERROR_NOT_INIT       -3
+#define DSPH_ERROR_ALREADY_INIT   -4
+#define DSPH_ERROR_NO_GPU         -5
+#define DSPH_ERROR_FILE_NOT_FOUND -6
+#define DSPH_ERROR_SIMULATION     -7
+#define DSPH_ERROR_MEMORY         -8
+#define DSPH_ERROR_NOT_PREPARED   -9
+#define DSPH_ERROR_ALREADY_PREPARED -10
+#define DSPH_ERROR_INVALID_STATE  -11
+#define DSPH_ERROR_BUFFER_TOO_SMALL -12
+
+//==============================================================================
+// Device Types
 //==============================================================================
 #define DSPH_DEVICE_CPU  0
 #define DSPH_DEVICE_GPU  1
 
 //==============================================================================
-// Opaque handle types
+// Kernel Types
+//==============================================================================
+#define DSPH_KERNEL_CUBIC     0
+#define DSPH_KERNEL_WENDLAND  1
+
+//==============================================================================
+// Viscosity Types
+//==============================================================================
+#define DSPH_VISCO_ARTIFICIAL   0
+#define DSPH_VISCO_LAMINAR      1
+#define DSPH_VISCO_LAMINAR_SPS  2
+
+//==============================================================================
+// Time Step Methods
+//==============================================================================
+#define DSPH_STEP_VERLET     0
+#define DSPH_STEP_SYMPLECTIC 1
+
+//==============================================================================
+// Boundary Methods
+//==============================================================================
+#define DSPH_BOUNDARY_DBC   0   // Dynamic Boundary Condition
+#define DSPH_BOUNDARY_MDBC  1   // Modified Dynamic Boundary Condition
+
+//==============================================================================
+// Density Diffusion Term
+//==============================================================================
+#define DSPH_DDT_NONE       0
+#define DSPH_DDT_MOLTENI    1
+#define DSPH_DDT_FOURTAKAS  2
+#define DSPH_DDT_FOURTAKAS_FULL 3
+
+//==============================================================================
+// Opaque Handle Types
 //==============================================================================
 typedef struct DsphSimulation_* DsphSimHandle;
 
 //==============================================================================
-// Version information
+// Particle Data Structure (for external buffer output)
+// 32 bytes per particle, 16-byte aligned for GPU efficiency
+//==============================================================================
+#pragma pack(push, 1)
+typedef struct DsphParticleData {
+    float posX, posY, posZ;    // Position (12 bytes)
+    float density;              // Density (4 bytes)
+    float velX, velY, velZ;    // Velocity (12 bytes)
+    float pressure;             // Pressure (4 bytes)
+} DsphParticleData;             // Total: 32 bytes
+#pragma pack(pop)
+
+//==============================================================================
+// Version Information
 //==============================================================================
 
 /// Get the library version string.
-/// @return Version string (e.g., "v5.4.355")
+/// @return Version string (e.g., "5.4.355")
 DUALSPH_CAPI const char* DsphGetVersion(void);
 
 /// Get the full library name with version.
@@ -68,7 +131,7 @@ DUALSPH_CAPI int DsphHasGpuSupport(void);
 DUALSPH_CAPI const char* DsphGetFeatures(void);
 
 //==============================================================================
-// Library initialization
+// Library Initialization
 //==============================================================================
 
 /// Initialize the DualSPHysics library. Must be called before any other functions.
@@ -104,7 +167,7 @@ DUALSPH_CAPI int DsphGetGpuInfo(int gpuId, char* nameBuffer, int nameBufferSize,
                                 int* totalMemoryMB);
 
 //==============================================================================
-// Simulation management
+// Simulation Lifecycle
 //==============================================================================
 
 /// Create a new simulation instance.
@@ -119,36 +182,305 @@ DUALSPH_CAPI int DsphCreateSimulation(int deviceType, int gpuId, DsphSimHandle* 
 /// @return DSPH_SUCCESS on success, error code otherwise
 DUALSPH_CAPI int DsphDestroySimulation(DsphSimHandle handle);
 
-/// Load simulation configuration from an XML case file.
-/// @param handle Simulation handle
-/// @param casePath Path to the case XML file (without _Def.xml suffix)
-/// @param outputDir Output directory path (can be NULL for default)
-/// @return DSPH_SUCCESS on success, error code otherwise
-DUALSPH_CAPI int DsphLoadCase(DsphSimHandle handle, const char* casePath, const char* outputDir);
-
-/// Run the full simulation (blocking call).
+/// Reset simulation to initial state (keeps configuration, clears particles).
 /// @param handle Simulation handle
 /// @return DSPH_SUCCESS on success, error code otherwise
-DUALSPH_CAPI int DsphRunSimulation(DsphSimHandle handle);
+DUALSPH_CAPI int DsphResetSimulation(DsphSimHandle handle);
 
 //==============================================================================
-// Simulation configuration (call after DsphLoadCase, before DsphRunSimulation)
+// Simulation Configuration (call before DsphPrepare)
 //==============================================================================
 
-/// Set the maximum simulation time.
+/// Set the simulation domain bounds.
 /// @param handle Simulation handle
-/// @param timeMax Maximum simulation time in seconds
+/// @param minX, minY, minZ Lower corner of domain
+/// @param maxX, maxY, maxZ Upper corner of domain
 /// @return DSPH_SUCCESS on success, error code otherwise
-DUALSPH_CAPI int DsphSetTimeMax(DsphSimHandle handle, double timeMax);
+DUALSPH_CAPI int DsphSetDomain(DsphSimHandle handle,
+                               double minX, double minY, double minZ,
+                               double maxX, double maxY, double maxZ);
 
-/// Set the time interval for saving output files.
+/// Set the initial particle spacing (dp).
+/// This determines the resolution of the simulation.
 /// @param handle Simulation handle
-/// @param timePart Time interval between PART outputs in seconds
+/// @param dp Particle spacing in world units
 /// @return DSPH_SUCCESS on success, error code otherwise
-DUALSPH_CAPI int DsphSetTimePart(DsphSimHandle handle, double timePart);
+DUALSPH_CAPI int DsphSetParticleSpacing(DsphSimHandle handle, double dp);
+
+/// Set the SPH kernel type.
+/// @param handle Simulation handle
+/// @param kernelType DSPH_KERNEL_CUBIC or DSPH_KERNEL_WENDLAND
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSetKernel(DsphSimHandle handle, int kernelType);
+
+/// Set gravitational acceleration.
+/// @param handle Simulation handle
+/// @param gx, gy, gz Gravity vector components (e.g., 0, 0, -9.81)
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSetGravity(DsphSimHandle handle, double gx, double gy, double gz);
+
+/// Set viscosity model and value.
+/// @param handle Simulation handle
+/// @param viscoType DSPH_VISCO_ARTIFICIAL, DSPH_VISCO_LAMINAR, or DSPH_VISCO_LAMINAR_SPS
+/// @param viscoValue Viscosity coefficient
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSetViscosity(DsphSimHandle handle, int viscoType, double viscoValue);
+
+/// Set viscosity factor for boundary interactions.
+/// @param handle Simulation handle
+/// @param factor Multiplier for viscosity at boundaries (default 1.0)
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSetViscoBoundFactor(DsphSimHandle handle, double factor);
+
+/// Set time integration method.
+/// @param handle Simulation handle
+/// @param method DSPH_STEP_VERLET or DSPH_STEP_SYMPLECTIC
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSetTimeStepMethod(DsphSimHandle handle, int method);
+
+/// Set the CFL number for adaptive time stepping.
+/// @param handle Simulation handle
+/// @param cfl CFL coefficient (default 0.2, lower = more stable but slower)
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSetCFL(DsphSimHandle handle, double cfl);
+
+/// Set boundary condition method.
+/// @param handle Simulation handle
+/// @param method DSPH_BOUNDARY_DBC or DSPH_BOUNDARY_MDBC
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSetBoundaryMethod(DsphSimHandle handle, int method);
+
+/// Set density diffusion term (DDT) for pressure noise reduction.
+/// @param handle Simulation handle
+/// @param ddtType DSPH_DDT_NONE, DSPH_DDT_MOLTENI, DSPH_DDT_FOURTAKAS, or DSPH_DDT_FOURTAKAS_FULL
+/// @param ddtValue DDT coefficient (default 0.1)
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSetDensityDiffusion(DsphSimHandle handle, int ddtType, double ddtValue);
+
+/// Set fluid reference density.
+/// @param handle Simulation handle
+/// @param rho0 Reference density in kg/m^3 (default 1000 for water)
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSetReferenceDensity(DsphSimHandle handle, double rho0);
+
+/// Set speed of sound coefficient.
+/// Higher values = stiffer fluid, more stable but smaller timesteps.
+/// @param handle Simulation handle
+/// @param speedOfSound Speed of sound (default calculated from expected max velocity)
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSetSpeedOfSound(DsphSimHandle handle, double speedOfSound);
+
+/// Enable or disable 2D simulation mode (forces in Y axis are zeroed).
+/// @param handle Simulation handle
+/// @param enable 1 to enable 2D mode, 0 for full 3D
+/// @param yPosition Y coordinate for the 2D plane (only used if enable=1)
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSet2DMode(DsphSimHandle handle, int enable, double yPosition);
 
 //==============================================================================
-// Error handling
+// Particle Definition (call before DsphPrepare)
+//==============================================================================
+
+/// Add fluid particles to the simulation.
+/// @param handle Simulation handle
+/// @param positions Array of positions [x0,y0,z0, x1,y1,z1, ...] (count*3 doubles)
+/// @param velocities Array of velocities [vx0,vy0,vz0, ...] (count*3 doubles), can be NULL for zero velocity
+/// @param count Number of particles to add
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphAddFluidParticles(DsphSimHandle handle,
+                                        const double* positions,
+                                        const double* velocities,
+                                        unsigned int count);
+
+/// Add boundary particles to the simulation.
+/// For mDBC, normals should point into the fluid domain.
+/// @param handle Simulation handle
+/// @param positions Array of positions [x0,y0,z0, x1,y1,z1, ...] (count*3 doubles)
+/// @param normals Array of normals [nx0,ny0,nz0, ...] (count*3 doubles), can be NULL for DBC
+/// @param count Number of particles to add
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphAddBoundaryParticles(DsphSimHandle handle,
+                                           const double* positions,
+                                           const double* normals,
+                                           unsigned int count);
+
+/// Add a rectangular block of fluid particles.
+/// Particles are automatically generated with the configured spacing (dp).
+/// @param handle Simulation handle
+/// @param minX, minY, minZ Lower corner of fluid block
+/// @param maxX, maxY, maxZ Upper corner of fluid block
+/// @param velX, velY, velZ Initial velocity for all particles in block
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphAddFluidBlock(DsphSimHandle handle,
+                                    double minX, double minY, double minZ,
+                                    double maxX, double maxY, double maxZ,
+                                    double velX, double velY, double velZ);
+
+/// Get the total number of particles currently defined.
+/// @param handle Simulation handle
+/// @param outFluidCount Pointer to receive fluid particle count (can be NULL)
+/// @param outBoundaryCount Pointer to receive boundary particle count (can be NULL)
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphGetDefinedParticleCounts(DsphSimHandle handle,
+                                               unsigned int* outFluidCount,
+                                               unsigned int* outBoundaryCount);
+
+/// Clear all defined particles (does not affect configuration).
+/// @param handle Simulation handle
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphClearParticles(DsphSimHandle handle);
+
+//==============================================================================
+// External Buffer Configuration (for CUDA-D3D12/Vulkan interop)
+//==============================================================================
+
+/// Set an external CUDA buffer for particle data output.
+/// DualSPHysics will write particle data directly to this buffer after each step.
+/// The buffer must remain valid for the lifetime of the simulation.
+///
+/// This enables zero-copy integration with graphics APIs:
+/// 1. Create D3D12/Vulkan buffer with shared flags
+/// 2. Import as CUDA external memory (cudaImportExternalMemory)
+/// 3. Get mapped device pointer (cudaExternalMemoryGetMappedBuffer)
+/// 4. Pass that pointer here
+/// 5. After DsphStep, the buffer contains particle data for rendering
+///
+/// @param handle Simulation handle
+/// @param cudaDevicePtr CUDA device pointer from cudaExternalMemoryGetMappedBuffer
+/// @param maxParticles Maximum particles the buffer can hold
+/// @param writeFluidOnly If 1, only fluid particles are written (not boundaries)
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSetExternalParticleBuffer(DsphSimHandle handle,
+                                                void* cudaDevicePtr,
+                                                unsigned int maxParticles,
+                                                int writeFluidOnly);
+
+/// Disable external buffer output (use internal buffers).
+/// @param handle Simulation handle
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphClearExternalParticleBuffer(DsphSimHandle handle);
+
+/// Get the CUDA stream used by the simulation.
+/// Use this for external synchronization (e.g., CUDA-D3D12 fences).
+/// @param handle Simulation handle
+/// @param outCudaStream Pointer to receive cudaStream_t (cast to void*)
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphGetCudaStream(DsphSimHandle handle, void** outCudaStream);
+
+/// Set an external CUDA stream for the simulation to use.
+/// The caller is responsible for the stream's lifetime.
+/// @param handle Simulation handle
+/// @param cudaStream cudaStream_t to use (cast to void*)
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSetCudaStream(DsphSimHandle handle, void* cudaStream);
+
+//==============================================================================
+// Simulation Preparation
+//==============================================================================
+
+/// Prepare the simulation for execution.
+/// This allocates GPU memory, builds spatial data structures, and computes
+/// initial values. Must be called after configuration and particle setup,
+/// before stepping.
+/// @param handle Simulation handle
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphPrepare(DsphSimHandle handle);
+
+/// Check if simulation is prepared and ready for stepping.
+/// @param handle Simulation handle
+/// @return 1 if prepared, 0 otherwise
+DUALSPH_CAPI int DsphIsPrepared(DsphSimHandle handle);
+
+//==============================================================================
+// Simulation Stepping
+//==============================================================================
+
+/// Compute the recommended timestep based on CFL condition.
+/// Call this each frame to get a stable dt, or use a fixed dt if preferred.
+/// @param handle Simulation handle
+/// @param outDt Pointer to receive recommended timestep in seconds
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphComputeTimeStep(DsphSimHandle handle, double* outDt);
+
+/// Perform a single simulation step (synchronous).
+/// Blocks until the step is complete.
+/// @param handle Simulation handle
+/// @param dt Timestep in seconds
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphStep(DsphSimHandle handle, double dt);
+
+/// Perform a single simulation step (asynchronous).
+/// Returns immediately; the step executes on the CUDA stream.
+/// Use DsphSynchronize() or external fence to wait for completion.
+/// @param handle Simulation handle
+/// @param dt Timestep in seconds
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphStepAsync(DsphSimHandle handle, double dt);
+
+/// Wait for all pending asynchronous operations to complete.
+/// @param handle Simulation handle
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphSynchronize(DsphSimHandle handle);
+
+/// Get the current simulation time.
+/// @param handle Simulation handle
+/// @param outTime Pointer to receive current simulation time in seconds
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphGetSimulationTime(DsphSimHandle handle, double* outTime);
+
+/// Get the number of simulation steps performed.
+/// @param handle Simulation handle
+/// @param outSteps Pointer to receive step count
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphGetStepCount(DsphSimHandle handle, unsigned int* outSteps);
+
+//==============================================================================
+// Particle Data Access (when not using external buffer)
+//==============================================================================
+
+/// Get the current number of active fluid particles.
+/// @param handle Simulation handle
+/// @param outCount Pointer to receive particle count
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphGetParticleCount(DsphSimHandle handle, unsigned int* outCount);
+
+/// Copy particle positions from GPU to a CPU buffer.
+/// @param handle Simulation handle
+/// @param outPositions Buffer to receive positions [x0,y0,z0, x1,y1,z1, ...] (count*3 floats)
+/// @param count Number of particles to copy (must not exceed particle count)
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphGetPositions(DsphSimHandle handle, float* outPositions, unsigned int count);
+
+/// Copy particle positions from GPU to a CPU buffer (double precision).
+/// @param handle Simulation handle
+/// @param outPositions Buffer to receive positions [x0,y0,z0, x1,y1,z1, ...] (count*3 doubles)
+/// @param count Number of particles to copy
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphGetPositionsDouble(DsphSimHandle handle, double* outPositions, unsigned int count);
+
+/// Copy particle velocities from GPU to a CPU buffer.
+/// @param handle Simulation handle
+/// @param outVelocities Buffer to receive velocities [vx0,vy0,vz0, ...] (count*3 floats)
+/// @param count Number of particles to copy
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphGetVelocities(DsphSimHandle handle, float* outVelocities, unsigned int count);
+
+/// Copy particle densities from GPU to a CPU buffer.
+/// @param handle Simulation handle
+/// @param outDensities Buffer to receive densities (count floats)
+/// @param count Number of particles to copy
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphGetDensities(DsphSimHandle handle, float* outDensities, unsigned int count);
+
+/// Copy all particle data to the external buffer (if set).
+/// This is called automatically after DsphStep/DsphStepAsync, but can be
+/// called manually if needed.
+/// @param handle Simulation handle
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphCopyToExternalBuffer(DsphSimHandle handle);
+
+//==============================================================================
+// Error Handling
 //==============================================================================
 
 /// Get the last error message.
@@ -158,4 +490,8 @@ DUALSPH_CAPI const char* DsphGetLastError(void);
 /// Clear the last error.
 DUALSPH_CAPI void DsphClearError(void);
 
+#ifdef __cplusplus
+}
 #endif
+
+#endif // _DualSPHysicsAPI_
