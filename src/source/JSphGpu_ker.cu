@@ -453,6 +453,7 @@ template<TpKernel tker,TpFtMode ftmode>
   (unsigned p1,const unsigned& pini,const unsigned& pfin
   ,const float* ftomassp
   ,const float4* poscell,const float4* velrho,const typecode* code,const unsigned* idp
+  ,const unsigned char* fluidtypeg  //-Multi-fluid: per-particle fluid type (nullptr for single-fluid)
   ,float massf,const float4& pscellp1,const float4& velrhop1,float& arp1,float& visc)
 {
   for(int p2=pini;p2<pfin;p2++){
@@ -467,6 +468,8 @@ template<TpKernel tker,TpFtMode ftmode>
       const float frx=fac*drx,fry=fac*dry,frz=fac*drz; //-Gradients.
 
       const float4 velrhop2=velrho[p2];
+      //-Multi-fluid: get mass for p2 based on its fluid type.
+      const float massf_mf = fluidtypeg ? cufsph::GetFluidTypeMass(fluidtypeg[p2]) : massf;
       //-Obtains particle mass p2 if there are floating bodies.
       //-Obtiene masa de particula p2 en caso de existir floatings.
       float ftmassp2;    //-Contains mass of floating body or massf if fluid. | Contiene masa de particula floating o massf si es fluid.
@@ -474,19 +477,19 @@ template<TpKernel tker,TpFtMode ftmode>
       if(USE_FLOATING){
         const typecode cod=code[p2];
         bool ftp2=CODE_IsFloating(cod);
-        ftmassp2=(ftp2? ftomassp[CODE_GetTypeValue(cod)]: massf);
+        ftmassp2=(ftp2? ftomassp[CODE_GetTypeValue(cod)]: massf_mf);
         compute=!(USE_FTEXTERNAL && ftp2); //-Deactivated when DEM or Chrono is used and is bound-float. | Se desactiva cuando se usa DEM o Chrono y es bound-float.
       }
 
       if(compute){
         //-Density derivative (Continuity equation).
         const float dvx=velrhop1.x-velrhop2.x, dvy=velrhop1.y-velrhop2.y, dvz=velrhop1.z-velrhop2.z;
-        arp1+=(USE_FLOATING? ftmassp2: massf)*(dvx*frx+dvy*fry+dvz*frz)*(velrhop1.w/velrhop2.w);
+        arp1+=(USE_FLOATING? ftmassp2: massf_mf)*(dvx*frx+dvy*fry+dvz*frz)*(velrhop1.w/velrhop2.w);
 
-        {//===== Viscosity ===== 
+        {//===== Viscosity =====
           const float dot=drx*dvx + dry*dvy + drz*dvz;
           const float dot_rr2=dot/(rr2+CTE.eta2);
-          visc=max(dot_rr2,visc); 
+          visc=max(dot_rr2,visc);
         }
       }
     }
@@ -497,11 +500,12 @@ template<TpKernel tker,TpFtMode ftmode>
 /// Particle interaction. Bound-Fluid/Float
 /// Realiza interaccion entre particulas. Bound-Fluid/Float
 //------------------------------------------------------------------------------
-template<TpKernel tker,TpFtMode ftmode> 
+template<TpKernel tker,TpFtMode ftmode>
   __global__ void KerInteractionForcesBound(unsigned n,unsigned pinit
   ,int scelldiv,int4 nc,int3 cellzero,const int2* beginendcellfluid,const unsigned* dcell
   ,const float* ftomassp
   ,const float4* poscell,const float4* velrho,const typecode* code,const unsigned* idp
+  ,const unsigned char* fluidtypeg  //-Multi-fluid: per-particle fluid type (nullptr for single-fluid)
   ,float* viscdt,float* ar)
 {
   const unsigned p=blockIdx.x*blockDim.x + threadIdx.x; //-Number of thread.
@@ -512,7 +516,7 @@ template<TpKernel tker,TpFtMode ftmode>
     //-Loads particle p1 data.
     const float4 pscellp1=poscell[p1];
     const float4 velrhop1=velrho[p1];
-    
+
     //-Obtains neighborhood search limits.
     int ini1,fin1,ini2,fin2,ini3,fin3;
     cunsearch::InitCte(dcell[p1],scelldiv,nc,cellzero,ini1,fin1,ini2,fin2,ini3,fin3);
@@ -522,7 +526,7 @@ template<TpKernel tker,TpFtMode ftmode>
       unsigned pini,pfin=0;  cunsearch::ParticleRange(c2,c3,ini1,fin1,beginendcellfluid,pini,pfin);
       if(pfin){
         KerInteractionForcesBoundBox<tker,ftmode> (p1,pini,pfin,ftomassp,poscell
-          ,velrho,code,idp,CTE.massf,pscellp1,velrhop1,arp1,visc);
+          ,velrho,code,idp,fluidtypeg,CTE.massf,pscellp1,velrhop1,arp1,visc);
       }
     }
     //-Stores results.
@@ -1093,9 +1097,11 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
     const int2* beginendcellfluid=dvd.beginendcell+dvd.cellfluid;
     dim3 sgridb=GetSimpleGridSize(t.boundnum,t.bsbound);
     //printf("bsbound:%u\n",bsbound);
-    KerInteractionForcesBound<tker,ftmode> <<<sgridb,t.bsbound,0,t.stm>>> 
+    KerInteractionForcesBound<tker,ftmode> <<<sgridb,t.bsbound,0,t.stm>>>
       (t.boundnum,t.boundini,dvd.scelldiv,dvd.nc,dvd.cellzero,beginendcellfluid,t.dcell
-      ,t.ftomassp,t.poscell,t.velrho,t.code,t.idp,t.viscdt,t.ar);
+      ,t.ftomassp,t.poscell,t.velrho,t.code,t.idp
+      ,t.fluidtypeg  //-Multi-fluid support
+      ,t.viscdt,t.ar);
   }
 }
 
