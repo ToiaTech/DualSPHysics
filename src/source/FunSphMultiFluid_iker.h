@@ -36,9 +36,13 @@ struct StGpuFluidType {
 };
 
 /// Constant memory for fluid type properties.
-/// Defined in FunSphMultiFluid_iker.cu, extern here for use in multiple compilation units.
-extern __constant__ StGpuFluidType c_MultiFluidTypes[MULTIFLUID_MAX_TYPES];
-extern __constant__ unsigned int c_MultiFluidTypeCount;
+/// Each CUDA compilation unit has its own copy of constant memory.
+/// The implementation file defines these; other files that include this header
+/// will get their own copy (which is the CUDA constant memory model).
+#ifndef FUNSPH_MULTIFLUID_IMPL
+__constant__ StGpuFluidType c_MultiFluidTypes[MULTIFLUID_MAX_TYPES];
+__constant__ unsigned int c_MultiFluidTypeCount;
+#endif
 
 namespace cufsph {
 

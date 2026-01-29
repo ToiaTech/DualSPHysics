@@ -18,10 +18,13 @@
 
 /// \file FunSphMultiFluid_iker.cu \brief Implements multi-fluid constant memory and upload functions.
 
+// Define FUNSPH_MULTIFLUID_IMPL before including header to prevent duplicate constant memory definition
+#define FUNSPH_MULTIFLUID_IMPL
 #include "FunSphMultiFluid_iker.h"
 #include <cstring>
 
 /// Constant memory definition for fluid type properties.
+/// This is the authoritative definition; the header provides extern declarations for other .cu files.
 __constant__ StGpuFluidType c_MultiFluidTypes[MULTIFLUID_MAX_TYPES];
 __constant__ unsigned int c_MultiFluidTypeCount;
 

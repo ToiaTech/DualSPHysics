@@ -21,7 +21,6 @@
 #include "JSphGpu_ker.h"
 #include "Functions.h"
 #include "FunctionsCuda.h"
-#include "FunSphMultiFluid_iker.h"
 #include "JLog2.h"
 #include <cfloat>
 #include <math_constants.h>
@@ -46,6 +45,7 @@ namespace cusph{
 #include "FunctionsGeo3d_iker.h"
 #include "FunSphKernel_iker.h"
 #include "FunSphEos_iker.h"
+#include "FunSphMultiFluid_iker.h"
 #include "JCellSearch_iker.h"
 
 
