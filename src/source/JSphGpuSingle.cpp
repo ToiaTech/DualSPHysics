@@ -614,6 +614,7 @@ void JSphGpuSingle::Interaction_Forces(TpInterStep interstep){
     ,AG_CPTR(BoundMode_g),AG_CPTR(TangenVel_g),AG_CPTR(MotionVel_g)//<vs_m2dbc>
     ,AG_CPTR(BoundNor_g),AG_PTR(NoPenShift_g) //<vs_m2dbcNP>
     ,FtoMasspg,AG_CPTR(SpsTauRho2_g),dengradcorr
+    ,nullptr  //-Multi-fluid: fluidtypeg (not used in standard DualSPHysics)
     ,ViscDt_g->ptr(),Ar_g->ptr(),Ace_g->ptr(),AG_PTR(Delta_g)
     ,AG_PTR(Sps2Strain_g)
     ,AG_PTR(ShiftPosfs_g)

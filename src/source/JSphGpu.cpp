@@ -725,6 +725,7 @@ void JSphGpu::ConfigBlockSizes(bool usezone,bool useperi){
         ,NULL,NULL,NULL //<vs_m2dbc>
         ,NULL //<vs_m2dbc> //SHABA4
         ,NULL,NULL,NULL
+        ,NULL  //-Multi-fluid: fluidtypeg
         ,NULL,NULL,NULL,NULL
         ,NULL
         ,NULL

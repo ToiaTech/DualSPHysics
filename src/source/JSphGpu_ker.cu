@@ -21,6 +21,7 @@
 #include "JSphGpu_ker.h"
 #include "Functions.h"
 #include "FunctionsCuda.h"
+#include "FunSphMultiFluid_iker.h"
 #include "JLog2.h"
 #include <cfloat>
 #include <math_constants.h>
@@ -544,6 +545,7 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
   ,const float* ftomassp,const float2* tauff,const float3* dengradcorr
   ,const float4* poscell,const float4* velrho,const typecode* code,const unsigned* idp
   ,const byte* boundmode,const float3* tangenvel,const float3* motionvel,const float3* boundnorm //<vs_m2dbc>
+  ,const unsigned char* fluidtypeg,unsigned char fluidtype1  //-Multi-fluid support
   ,float massp2,bool ftp1
   ,const float4& pscellp1,const float4& velrhop1,float pressp1
   ,const float2& taup1_xx_xy,const float2& taup1_xz_yy,const float2& taup1_yz_zz
@@ -588,22 +590,31 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
       } //<vs_m2dbc_end>
 
       const float4 velrhop2=velrho[p2];
+      //-Multi-fluid: get fluid type and properties for p2.
+      const unsigned char fluidtype2 = (fluidtypeg && !boundp2) ? fluidtypeg[p2] : 0;
+      const float massp2_mf = (fluidtypeg && !boundp2) ? cufsph::GetFluidTypeMass(fluidtype2) : massp2;
       //-Velocity derivative (Momentum equation).
       if(compute && !ncpress){
-        const float pressp2=cufsph::ComputePressCte(velrhop2.w);
+        //-Compute pressure for p2 (multi-fluid uses per-particle rho0 and cteB).
+        const float pressp2 = (fluidtypeg && !boundp2)
+          ? cufsph::ComputePressFromFluidType(velrhop2.w, fluidtype2, CTE.gamma)
+          : cufsph::ComputePressCte(velrhop2.w);
         const float prs=(pressp1+pressp2)/(velrhop1.w*velrhop2.w)
           +(tker==KERNEL_Cubic? cufsph::GetKernelCubic_Tensil(rr2,velrhop1.w,pressp1,velrhop2.w,pressp2): 0);
-        const float p_vpm=-prs*(USE_FLOATING? ftmassp2: massp2);
+        const float p_vpm=-prs*(USE_FLOATING? ftmassp2: massp2_mf);
         acep1.x+=p_vpm*frx; acep1.y+=p_vpm*fry; acep1.z+=p_vpm*frz;
       }
 
       if(ncpress && compute){ //<vs_advshift_ini>
-        const float pressp2=cufsph::ComputePressCte(velrhop2.w);
+        //-Compute pressure for p2 (multi-fluid uses per-particle rho0 and cteB).
+        const float pressp2 = (fluidtypeg && !boundp2)
+          ? cufsph::ComputePressFromFluidType(velrhop2.w, fluidtype2, CTE.gamma)
+          : cufsph::ComputePressCte(velrhop2.w);
         const float prs=(pressp1+pressp2)/(velrhop1.w*velrhop2.w)
           +(tker==KERNEL_Cubic? cufsph::GetKernelCubic_Tensil(rr2,velrhop1.w,pressp1,velrhop2.w,pressp2): 0);
-        const float p_vpm=-prs*(USE_FLOATING? ftmassp2: massp2);
+        const float p_vpm=-prs*(USE_FLOATING? ftmassp2: massp2_mf);
         const float ncprs=(-pressp1+pressp2)/(velrhop1.w*velrhop2.w);
-        const float ncp_vpm=-ncprs*(USE_FLOATING? ftmassp2: massp2);
+        const float ncp_vpm=-ncprs*(USE_FLOATING? ftmassp2: massp2_mf);
         presssym.x+=p_vpm*frx; presssym.y+=p_vpm*fry; presssym.z+=p_vpm*frz;
         pressasym.x+=ncp_vpm*frx; pressasym.y+=ncp_vpm*fry; pressasym.z+=ncp_vpm*frz;
       } //<vs_advshift_end>    
@@ -618,7 +629,7 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
         dvz=velrhop1.z-movvelp2.z;
       } //<vs_m2dbc_end>
       #endif
-      if(compute)arp1+=(USE_FLOATING? ftmassp2: massp2)*(dvx*frx+dvy*fry+dvz*frz)*(velrhop1.w/velrhop2.w);
+      if(compute)arp1+=(USE_FLOATING? ftmassp2: massp2_mf)*(dvx*frx+dvy*fry+dvz*frz)*(velrhop1.w/velrhop2.w);
 
       #ifdef AVAILABLE_DIVCLEAN
       if(divclean && compute){
@@ -626,7 +637,7 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
         if(boundp2)psicleanp2=psicleanp1;
         float dvpsiclean=-(psicleanp1+psicleanp2)*massp2/(velrhop2.w);
         acep1.x+=dvpsiclean*frx; acep1.y+=dvpsiclean*fry; acep1.z+=dvpsiclean*frz;
-        psicleanr+=CTE.cs0*CTE.cs0*(USE_FLOATING? ftmassp2: massp2)*(dvx*frx+dvy*fry+dvz*frz)/(velrhop2.w);
+        psicleanr+=CTE.cs0*CTE.cs0*(USE_FLOATING? ftmassp2: massp2_mf)*(dvx*frx+dvy*fry+dvz*frz)/(velrhop2.w);
       }
       #endif
 
@@ -634,7 +645,7 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
         float4 shiftp2=make_float4(0.f,0.f,0.f,0.f);
         if(!boundp2 && !ftp2 && !ftp1)shiftp2=shiftvel[p2];      
 
-        float massrhop=(USE_FLOATING? ftmassp2: massp2)/velrhop2.w;
+        float massrhop=(USE_FLOATING? ftmassp2: massp2_mf)/velrhop2.w;
         float rhozeroover1=CTE.rhopzero/velrhop1.w;
         float divshiftp1=shiftp1.x*frx+shiftp1.y*fry+shiftp1.z*frz;
         float divshiftp2=shiftp2.x*frx+shiftp2.y*fry+shiftp2.z*frz;
@@ -660,7 +671,7 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
       if(tdensity==DDT_DDT && deltap1!=FLT_MAX){
         const float rhop1over2=velrhop1.w/velrhop2.w;
         const float visc_densi=CTE.ddtkh*cbar*(rhop1over2-1.f)/(rr2+CTE.eta2);
-        const float delta=visc_densi*dot3*(USE_FLOATING? ftmassp2: massp2);
+        const float delta=visc_densi*dot3*(USE_FLOATING? ftmassp2: massp2_mf);
         //deltap1=(boundp2? FLT_MAX: deltap1+delta);
         deltap1=(boundp2 && CTE.tboundary==BC_DBC? FLT_MAX: deltap1+delta);
       }
@@ -675,7 +686,7 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
 
       //-Shifting correction.
       if(shift && shiftposfsp1.x!=FLT_MAX){
-        const float massrho=(USE_FLOATING? ftmassp2: massp2)/velrhop2.w;
+        const float massrho=(USE_FLOATING? ftmassp2: massp2_mf)/velrhop2.w;
         const bool noshift=(boundp2 && (shiftmode==SHIFT_NoBound || (shiftmode==SHIFT_NoFixed && CODE_IsFixed(code[p2]))));
         shiftposfsp1.x=(noshift? FLT_MAX: shiftposfsp1.x+massrho*frx); //-Removes shifting for the boundaries. | Con boundary anula shifting.
         shiftposfsp1.y+=massrho*fry;
@@ -708,7 +719,7 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
 
       //-Advanced shifting. //<vs_advshift_ini>
       if(shiftadv && compute){
-        const float massrho=(USE_FLOATING? ftmassp2: massp2)/velrhop2.w;        
+        const float massrho=(USE_FLOATING? ftmassp2: massp2_mf)/velrhop2.w;        
         const float wab=cufsph::GetKernel_Wab<KERNEL_Wendland>(rr2);
         pou+=wab*massrho;
         fs_treshold-=massrho*(drx*frx+dry*fry+drz*frz);
@@ -731,18 +742,21 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
         const float dot=drx*dvx + dry*dvy + drz*dvz;
         const float dot_rr2=dot/(rr2+CTE.eta2);
         visc=max(dot_rr2,visc);  //ViscDt=max(dot/(rr2+Eta2),ViscDt);
+        //-Multi-fluid: use averaged viscosity for fluid-fluid interactions.
+        const float visco_eff = (fluidtypeg && !boundp2)
+          ? cufsph::GetAveragedViscosity(fluidtype1, fluidtype2) : visco;
         if(tvisco==VISCO_Artificial){//-Artificial viscosity.
           if(dot<0){
             const float amubar=CTE.kernelh*dot_rr2;  //amubar=CTE.kernelh*dot/(rr2+CTE.eta2);
             const float robar=(velrhop1.w+velrhop2.w)*0.5f;
-            const float pi_visc=(-visco*cbar*amubar/robar)*(USE_FLOATING? ftmassp2: massp2);
+            const float pi_visc=(-visco_eff*cbar*amubar/robar)*(USE_FLOATING? ftmassp2: massp2_mf);
             acep1.x-=pi_visc*frx; acep1.y-=pi_visc*fry; acep1.z-=pi_visc*frz;
           }
         }
         if(tvisco==VISCO_Laminar || tvisco==VISCO_LaminarSPS){//-Laminar and Laminar+SPS viscosity.
           const float robar2=(velrhop1.w+velrhop2.w);
-          const float temp=4.f*visco/((rr2+CTE.eta2)*robar2);  //-Simplication of temp=2.0f*visco/((rr2+CTE.eta2)*robar); robar=(rhopp1+velrhop2.w)*0.5f;
-          const float vtemp=(USE_FLOATING? ftmassp2: massp2)*temp*(drx*frx+dry*fry+drz*frz);  
+          const float temp=4.f*visco_eff/((rr2+CTE.eta2)*robar2);  //-Simplication of temp=2.0f*visco/((rr2+CTE.eta2)*robar); robar=(rhopp1+velrhop2.w)*0.5f;
+          const float vtemp=(USE_FLOATING? ftmassp2: massp2_mf)*temp*(drx*frx+dry*fry+drz*frz);
           acep1.x+=vtemp*dvx; acep1.y+=vtemp*dvy; acep1.z+=vtemp*dvz;
         }
         if(tvisco==VISCO_LaminarSPS){//-SPS contribution for Laminar viscosity. 
@@ -758,12 +772,12 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
                    taup2=tauff[p2*3+1];   stau_xz_yy.x+=taup2.x; stau_xz_yy.y+=taup2.y;
                    taup2=tauff[p2*3+2];   stau_yz_zz.x+=taup2.x; stau_yz_zz.y+=taup2.y;
           }
-          acep1.x+=(USE_FLOATING? ftmassp2: massp2)*(stau_xx_xy.x*frx + stau_xx_xy.y*fry + stau_xz_yy.x*frz);
-          acep1.y+=(USE_FLOATING? ftmassp2: massp2)*(stau_xx_xy.y*frx + stau_xz_yy.y*fry + stau_yz_zz.x*frz);
-          acep1.z+=(USE_FLOATING? ftmassp2: massp2)*(stau_xz_yy.x*frx + stau_yz_zz.x*fry + stau_yz_zz.y*frz);
+          acep1.x+=(USE_FLOATING? ftmassp2: massp2_mf)*(stau_xx_xy.x*frx + stau_xx_xy.y*fry + stau_xz_yy.x*frz);
+          acep1.y+=(USE_FLOATING? ftmassp2: massp2_mf)*(stau_xx_xy.y*frx + stau_xz_yy.y*fry + stau_yz_zz.x*frz);
+          acep1.z+=(USE_FLOATING? ftmassp2: massp2_mf)*(stau_xz_yy.x*frx + stau_yz_zz.x*fry + stau_yz_zz.y*frz);
           //-Velocity gradients.
           if(USE_NOFLOATING || !ftp1){//-When p1 is fluid.
-            const float volp2=-(USE_FLOATING? ftmassp2: massp2)/velrhop2.w;
+            const float volp2=-(USE_FLOATING? ftmassp2: massp2_mf)/velrhop2.w;
             float dv=dvx*volp2; two_strainp1_xx_xy.x+=dv*frx; two_strainp1_xx_xy.y+=dv*fry; two_strainp1_xz_yy.x+=dv*frz;
                   dv=dvy*volp2; two_strainp1_xx_xy.y+=dv*frx; two_strainp1_xz_yy.y+=dv*fry; two_strainp1_yz_zz.x+=dv*frz;
                   dv=dvz*volp2; two_strainp1_xz_yy.x+=dv*frx; two_strainp1_yz_zz.x+=dv*fry; two_strainp1_yz_zz.y+=dv*frz;
@@ -793,6 +807,7 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
   ,const float3* dengradcorr,const float4* poscell,const float4* velrho
   ,const typecode* code,const unsigned* idp
   ,const byte* boundmode,const float3* tangenvel,const float3* motionvel,const float3* boundnormal //<vs_m2dbc>
+  ,const unsigned char* fluidtypeg  //-Multi-fluid: per-particle fluid type (nullptr for single-fluid)
   ,float* viscdt,float* ar,float3* ace,float* delta
   ,TpShifting shiftmode,float4* shiftposfs, float4* nopenshift                                 //<vs_advshift>
   ,unsigned* fstype,const float4* shiftvel,bool corrector,bool simulate2d //<vs_advshift>
@@ -843,7 +858,13 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
     //-Obtains basic data of particle p1.
     const float4 pscellp1=poscell[p1];
     const float4 velrhop1=velrho[p1];
-    const float pressp1=cufsph::ComputePressCte(velrhop1.w);
+    //-Compute pressure (multi-fluid uses per-particle rho0 and cteB).
+    const unsigned char fluidtype1 = fluidtypeg ? fluidtypeg[p1] : 0;
+    const float pressp1 = fluidtypeg
+      ? cufsph::ComputePressFromFluidType(velrhop1.w, fluidtype1, CTE.gamma)
+      : cufsph::ComputePressCte(velrhop1.w);
+    //-Multi-fluid mass for p1 (used in interactions).
+    const float massf1 = fluidtypeg ? cufsph::GetFluidTypeMass(fluidtype1) : CTE.massf;
 
     //-Variables for Laminar+SPS.
     float2 taup1_xx_xy,taup1_xz_yy,taup1_yz_zz; //-Note that taup1 is tau_a/rho_a^2.
@@ -872,7 +893,8 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
         KerInteractionForcesFluidBox<tker,ftmode,tvisco,tdensity,shift,mdbc2,shiftadv,aleform,ncpress,divclean>
           (false,p1,pini,pfin,viscof,ftomassp,tauff,dengradcorr,poscell,velrho,code,idp
           ,boundmode,tangenvel,motionvel,boundnormal //<vs_m2dbc>
-          ,CTE.massf,ftp1,pscellp1,velrhop1,pressp1,taup1_xx_xy,taup1_xz_yy,taup1_yz_zz
+          ,fluidtypeg,fluidtype1  //-Multi-fluid support
+          ,massf1,ftp1,pscellp1,velrhop1,pressp1,taup1_xx_xy,taup1_xz_yy,taup1_yz_zz
           ,two_strainp1_xx_xy,two_strainp1_xz_yy,two_strainp1_yz_zz,acep1,arp1,visc
           ,deltap1,shiftmode,shiftposfsp1,nopenshiftp1,nopencountp1
           ,fs_treshold,neigh,pou,shiftvel,presssym,pressasym,LCorr,shiftp1 //<vs_advshift>
@@ -887,6 +909,7 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
         KerInteractionForcesFluidBox<tker,ftmode,tvisco,tdensity,shift,mdbc2,shiftadv,aleform,ncpress,divclean>
           (true,p1,pini,pfin,viscob,ftomassp,tauff,NULL,poscell,velrho,code,idp
           ,boundmode,tangenvel,motionvel,boundnormal //<vs_m2dbc>
+          ,fluidtypeg,fluidtype1  //-Multi-fluid support
           ,CTE.massb,ftp1,pscellp1,velrhop1,pressp1,taup1_xx_xy,taup1_xz_yy,taup1_yz_zz
           ,two_strainp1_xx_xy,two_strainp1_xz_yy,two_strainp1_yz_zz,acep1,arp1,visc
           ,deltap1,shiftmode,shiftposfsp1,nopenshiftp1,nopencountp1
@@ -1056,10 +1079,11 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
   if(t.fluidnum){
     //printf("[ns:%u  id:%d] halo:%d fini:%d(%d) bini:%d(%d)\n",t.nstep,t.id,t.halo,t.fluidini,t.fluidnum,t.boundini,t.boundnum);
     dim3 sgridf=GetSimpleGridSize(t.fluidnum,t.bsfluid);
-    KerInteractionForcesFluid<tker,ftmode,tvisco,tdensity,shift,mdbc2,shiftadv,aleform,ncpress,divclean> <<<sgridf,t.bsfluid,0,t.stm>>> 
+    KerInteractionForcesFluid<tker,ftmode,tvisco,tdensity,shift,mdbc2,shiftadv,aleform,ncpress,divclean> <<<sgridf,t.bsfluid,0,t.stm>>>
       (t.fluidnum,t.fluidini,t.viscob,t.viscof,dvd.scelldiv,dvd.nc,dvd.cellzero,dvd.beginendcell,dvd.cellfluid,t.dcell
       ,t.ftomassp,(const float2*)t.spstaurho2,(float2*)t.sps2strain,t.dengradcorr,t.poscell,t.velrho,t.code,t.idp
       ,t.boundmode,t.tangenvel,t.motionvel,t.boundnormal //<vs_m2dbc>
+      ,t.fluidtypeg  //-Multi-fluid support
       ,t.viscdt,t.ar,t.ace,t.delta,t.shiftmode,t.shiftposfs,t.nopenshift
       ,t.fstype,t.shiftvel,t.corrector,t.simulate2d  //<vs_advshift>
       ,t.psiclean,t.psicleanrhs,t.cspsiclean,t.divcleankp);        //<vs_divclean>

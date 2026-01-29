@@ -92,6 +92,8 @@ typedef struct StrInterParmsg{
   const float*     ftomassp;
   const tsymatrix3f* spstaurho2;
   const float3*    dengradcorr;
+  //-Multi-fluid support.
+  const unsigned char* fluidtypeg;  ///< Per-particle fluid type ID (nullptr for single-fluid)
   //-Output data arrays.
   float*  viscdt;
   float*  ar;
@@ -139,6 +141,7 @@ typedef struct StrInterParmsg{
     ,const float* ftomassp
     ,const tsymatrix3f* spstaurho2
     ,const float3* dengradcorr
+    ,const unsigned char* fluidtypeg
     ,float* viscdt
     ,float* ar
     ,float3* ace
@@ -184,6 +187,7 @@ typedef struct StrInterParmsg{
     this->ftomassp=ftomassp;
     this->spstaurho2=spstaurho2;
     this->dengradcorr=dengradcorr;
+    this->fluidtypeg=fluidtypeg;
     //-Output data arrays.
     this->viscdt=viscdt;
     this->ar=ar;

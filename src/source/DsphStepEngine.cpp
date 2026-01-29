@@ -23,6 +23,7 @@
 #include "DsphStepEngine.h"
 #include "DsphStepEngine_ker.h"
 #include "FunSphKernelsCfg.h"
+#include "FunSphMultiFluid_iker.h"
 #include "Functions.h"
 #include "FunctionsCuda.h"
 #include "JSphGpu_ker.h"
@@ -629,6 +630,7 @@ void DsphStepEngine::Interaction_Forces() {
     nullptr,                        // ftomassp (floating)
     nullptr,                        // spstaurho2 (SPS)
     nullptr,                        // dengradcorr
+    FluidTypeg,                     // fluidtypeg (multi-fluid)
     ViscDtg, Arg, Aceg,             // output: viscdt, ar, ace
     Deltag,                         // delta (DDT)
     nullptr,                        // sps2strain
@@ -1470,8 +1472,13 @@ void DsphStepEngine::ApplyFluidTypeProperties() {
     cteB[i] = FluidTypes[i].cteB;
   }
 
-  // Upload fluid type properties to GPU constant memory
+  // Upload fluid type properties to GPU constant memory (for density initialization)
   dsphker::UploadFluidTypes(
+    rho0.data(), viscosity.data(), mass.data(), cs0.data(), cteB.data(),
+    FluidTypeCount);
+
+  // Upload fluid type properties to multi-fluid constant memory (for force computation)
+  cufsph::UploadMultiFluidTypesFromArrays(
     rho0.data(), viscosity.data(), mass.data(), cs0.data(), cteB.data(),
     FluidTypeCount);
 
