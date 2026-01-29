@@ -1726,6 +1726,20 @@ DUALSPH_CAPI int DsphGetFluidTypeParticleCount(
     SetError("Invalid parameters");
     return DSPH_ERROR_INVALID_PARAM;
   }
+
+#ifdef _WITHGPU
+  if(handle->prepared && handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    if(fluidType < 0 || (unsigned int)fluidType >= handle->stepEngine->GetFluidTypeCount()) {
+      SetError("Invalid fluid type ID");
+      return DSPH_ERROR_INVALID_FLUID_TYPE;
+    }
+
+    *outCount = handle->stepEngine->GetFluidTypeParticleCount((unsigned int)fluidType);
+    return DSPH_SUCCESS;
+  }
+#endif
+
+  // Before preparation or CPU: only type 0, return all fluid particles
   if(fluidType != 0) {
     SetError("Invalid fluid type");
     return DSPH_ERROR_INVALID_FLUID_TYPE;

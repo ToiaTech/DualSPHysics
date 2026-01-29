@@ -462,6 +462,9 @@ public:
   /// Get fluid type for a specific particle.
   unsigned int GetParticleFluidType(unsigned int particleIndex);
 
+  /// Get the number of particles with a specific fluid type.
+  unsigned int GetFluidTypeParticleCount(unsigned int fluidTypeId);
+
   /// Reset simulation to initial state.
   void Reset();
 

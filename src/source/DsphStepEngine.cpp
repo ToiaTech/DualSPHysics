@@ -1430,4 +1430,22 @@ unsigned int DsphStepEngine::GetParticleFluidType(unsigned int particleIndex) {
   return (unsigned int)typeVal;
 }
 
+unsigned int DsphStepEngine::GetFluidTypeParticleCount(unsigned int fluidTypeId) {
+  if(!Initialized || fluidTypeId >= FluidTypeCount) return 0;
+
+  // Copy all fluid type IDs from GPU to host and count
+  std::vector<unsigned char> fluidTypes(Npf);
+  cudaMemcpy(fluidTypes.data(), FluidTypeg + Npb, Npf * sizeof(unsigned char),
+             cudaMemcpyDeviceToHost);
+
+  unsigned int count = 0;
+  for(unsigned int i = 0; i < Npf; i++) {
+    if(fluidTypes[i] == (unsigned char)fluidTypeId) {
+      count++;
+    }
+  }
+
+  return count;
+}
+
 #endif // _WITHGPU
