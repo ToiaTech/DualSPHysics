@@ -1,0 +1,33 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.3.32922.545
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DualSPHysicsDLL", "DualSPHysicsDLL.vcxproj", "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+	ProjectSection(ProjectDependencies) = postProject
+		{5D455068-7913-47CD-BC42-4B0DB19FD4A4} = {5D455068-7913-47CD-BC42-4B0DB19FD4A4}
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "LibDSphMoorDynPlus", "LibDSphMoorDynPlus.vcxproj", "{5D455068-7913-47CD-BC42-4B0DB19FD4A4}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|x64.ActiveCfg = Debug|x64
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|x64.Build.0 = Debug|x64
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|x64.ActiveCfg = Release|x64
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|x64.Build.0 = Release|x64
+		{5D455068-7913-47CD-BC42-4B0DB19FD4A4}.Debug|x64.ActiveCfg = Debug|x64
+		{5D455068-7913-47CD-BC42-4B0DB19FD4A4}.Debug|x64.Build.0 = Debug|x64
+		{5D455068-7913-47CD-BC42-4B0DB19FD4A4}.Release|x64.ActiveCfg = Release|x64
+		{5D455068-7913-47CD-BC42-4B0DB19FD4A4}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {12345678-ABCD-EF01-2345-6789ABCDEF01}
+	EndGlobalSection
+EndGlobal

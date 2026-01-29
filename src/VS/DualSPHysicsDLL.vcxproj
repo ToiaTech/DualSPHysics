@@ -1,0 +1,327 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <RootNamespace>DualSPHysics</RootNamespace>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectName>DualSPHysicsDLL</ProjectName>
+    <CudaToolkitCustomDir>$(CUDA_PATH_V12_8)</CudaToolkitCustomDir>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseOfMfc>false</UseOfMfc>
+    <CharacterSet>MultiByte</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseOfMfc>false</UseOfMfc>
+    <CharacterSet>MultiByte</CharacterSet>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 12.8.props" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.30319.1</_ProjectFileVersion>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">../../bin/windows/</OutDir>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">../../bin/windows/</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Intermediate/$(ProjectName)_$(Configuration)_$(PlatformName)/</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Intermediate/$(ProjectName)_$(Configuration)_$(PlatformName)/</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">DualSPHysics</TargetName>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">DualSPHysics_debug</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.dll</TargetExt>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.dll</TargetExt>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <EnableFiberSafeOptimizations>false</EnableFiberSafeOptimizations>
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+      <AdditionalIncludeDirectories>$(CUDA_PATH_V12_8)/include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>DUALSPHYSICS_DLL;DUALSPHYSICS_DLL_EXPORT;_WITHGPU;WIN32;_WITHMR;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <OpenMPSupport>true</OpenMPSupport>
+      <CompileAs>CompileAsCpp</CompileAs>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>cudart_static.lib;dsphchrono.lib;LibJWaveGen_$(PlatformName)_$(PlatformToolset)_$(Configuration).lib;LibDSphMoorDynPlus_$(PlatformName)_$(PlatformToolset)_$(Configuration).lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <OutputFile>$(TargetPath)</OutputFile>
+      <AdditionalLibraryDirectories>$(CUDA_PATH_V12_8)/lib/$(PlatformName);../lib/vs2022;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <SubSystem>Windows</SubSystem>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>false</EnableCOMDATFolding>
+      <ImportLibrary>../lib/vs2022/$(TargetName).lib</ImportLibrary>
+    </Link>
+    <CudaCompile>
+      <TargetMachinePlatform>64</TargetMachinePlatform>
+      <UseHostInclude>false</UseHostInclude>
+      <AdditionalOptions>-use_fast_math -Xcompiler "/wd 4267" -Wno-deprecated-gpu-targets -DCUB_IGNORE_DEPRECATED_CPP_DIALECT -DTHRUST_IGNORE_DEPRECATED_CPP_DIALECT %(AdditionalOptions)</AdditionalOptions>
+      <CodeGeneration>compute_61,sm_61;compute_70,sm_70;compute_86,sm_86</CodeGeneration>
+      <Defines>DUALSPHYSICS_DLL;DUALSPHYSICS_DLL_EXPORT</Defines>
+    </CudaCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <AdditionalIncludeDirectories>$(CUDA_PATH_V12_8)/include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>DUALSPHYSICS_DLL;DUALSPHYSICS_DLL_EXPORT;_WITHGPU;WIN32;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <OpenMPSupport>true</OpenMPSupport>
+      <CompileAs>CompileAsCpp</CompileAs>
+      <MinimalRebuild>true</MinimalRebuild>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>cudart_static.lib;dsphchrono.lib;LibJWaveGen_$(PlatformName)_$(PlatformToolset)_$(Configuration).lib;LibDSphMoorDynPlus_$(PlatformName)_$(PlatformToolset)_$(Configuration).lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <OutputFile>$(TargetPath)</OutputFile>
+      <AdditionalLibraryDirectories>$(CUDA_PATH_V12_8)/lib/$(PlatformName);../lib/vs2022;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <SubSystem>Windows</SubSystem>
+      <ImportLibrary>../lib/vs2022/$(TargetName).lib</ImportLibrary>
+    </Link>
+    <CudaCompile>
+      <TargetMachinePlatform>64</TargetMachinePlatform>
+      <UseHostInclude>false</UseHostInclude>
+      <AdditionalOptions>-use_fast_math -Xcompiler "/wd 4267" -Wno-deprecated-gpu-targets %(AdditionalOptions)</AdditionalOptions>
+      <CodeGeneration>compute_61,sm_61;compute_70,sm_70;compute_86,sm_86</CodeGeneration>
+      <Defines>DUALSPHYSICS_DLL;DUALSPHYSICS_DLL_EXPORT</Defines>
+    </CudaCompile>
+  </ItemDefinitionGroup>
+  <!-- CUDA Kernel Files -->
+  <ItemGroup>
+    <CudaCompile Include="..\source\JCellDivGpu_ker.cu" />
+    <CudaCompile Include="..\source\JCellDivGpuSingle_ker.cu" />
+    <CudaCompile Include="..\source\JDsPips_ker.cu" />
+    <CudaCompile Include="..\source\JDsGauge_ker.cu" />
+    <CudaCompile Include="..\source\JReduSum_ker.cu" />
+    <CudaCompile Include="..\source\JRelaxZone_ker.cu" />
+    <CudaCompile Include="..\source\JSphShifting_ker.cu" />
+    <CudaCompile Include="..\source\JDsAccInput_ker.cu" />
+    <CudaCompile Include="..\source\JSphGpuSimple_ker.cu" />
+    <CudaCompile Include="..\source\JSphGpu_ker.cu" />
+    <CudaCompile Include="..\source\JWaveOrder2_ker.cu" />
+    <CudaCompile Include="..\source\DsphStepEngine_ker.cu" />
+    <CudaCompile Include="..\source\FunSphMultiFluid_iker.cu" />
+  </ItemGroup>
+  <!-- Header Files -->
+  <ItemGroup>
+    <ClInclude Include="..\source\DualSphDef.h" />
+    <ClInclude Include="..\source\DualSPHysicsLib.h" />
+    <ClInclude Include="..\source\DsphStepEngine.h" />
+    <ClInclude Include="..\source\DsphStepEngine_ker.h" />
+    <ClInclude Include="..\source\FunSphMultiFluid_iker.h" />
+    <ClInclude Include="..\source\Functions.h" />
+    <ClInclude Include="..\source\FunctionsCuda.h" />
+    <ClInclude Include="..\source\FunGeo3d.h" />
+    <ClInclude Include="..\source\FunctionsMath.h" />
+    <ClInclude Include="..\source\FunSphEos.h" />
+    <ClInclude Include="..\source\FunSphKernel.h" />
+    <ClInclude Include="..\source\FunSphKernelDef.h" />
+    <ClInclude Include="..\source\FunSphKernelsCfg.h" />
+    <ClInclude Include="..\source\JAppInfo.h" />
+    <ClInclude Include="..\source\JArraysCpu.h" />
+    <ClInclude Include="..\source\JArraysGpu.h" />
+    <ClInclude Include="..\source\JBinaryData.h" />
+    <ClInclude Include="..\source\JCellDivCpu.h" />
+    <ClInclude Include="..\source\JCellDivCpuSingle.h" />
+    <ClInclude Include="..\source\JCellDivDataCpu.h" />
+    <ClInclude Include="..\source\JCellDivDataGpu.h" />
+    <ClInclude Include="..\source\JCellDivGpu.h" />
+    <ClInclude Include="..\source\JCellDivGpuSingle.h" />
+    <ClInclude Include="..\source\JCellDivGpuSingle_ker.h" />
+    <ClInclude Include="..\source\JCellDivGpu_ker.h" />
+    <ClInclude Include="..\source\JCfgRunBase.h" />
+    <ClInclude Include="..\source\JDataArrays.h" />
+    <ClInclude Include="..\source\JException.h" />
+    <ClInclude Include="..\source\JLog2.h" />
+    <ClInclude Include="..\source\JMatrix4.h" />
+    <ClInclude Include="..\source\JObject.h" />
+    <ClInclude Include="..\source\JObjectGpu.h" />
+    <ClInclude Include="..\source\JOutputCsv.h" />
+    <ClInclude Include="..\source\JPartDataBi4.h" />
+    <ClInclude Include="..\source\JPartDataHead.h" />
+    <ClInclude Include="..\source\JRadixSort.h" />
+    <ClInclude Include="..\source\JRangeFilter.h" />
+    <ClInclude Include="..\source\JReadDatafile.h" />
+    <ClInclude Include="..\source\JReduSum_ker.h" />
+    <ClInclude Include="..\source\JSaveCsv2.h" />
+    <ClInclude Include="..\source\JSph.h" />
+    <ClInclude Include="..\source\JSphCpu.h" />
+    <ClInclude Include="..\source\JSphCpuSingle.h" />
+    <ClInclude Include="..\source\JSphGpu.h" />
+    <ClInclude Include="..\source\JSphGpuSingle.h" />
+    <ClInclude Include="..\source\JSphGpu_cte.h" />
+    <ClInclude Include="..\source\JSphGpu_ker.h" />
+    <ClInclude Include="..\source\JSphMk.h" />
+    <ClInclude Include="..\source\JSpVtkData.h" />
+    <ClInclude Include="..\source\JSpVtkShape.h" />
+    <ClInclude Include="..\source\JTimeControl.h" />
+    <ClInclude Include="..\source\JTimer.h" />
+    <ClInclude Include="..\source\JTrianglesMesh.h" />
+    <ClInclude Include="..\source\JXml.h" />
+    <ClInclude Include="..\source\OmpDefs.h" />
+    <ClInclude Include="..\source\TypesDef.h" />
+    <ClInclude Include="..\source\tinystr.h" />
+    <ClInclude Include="..\source\tinyxml.h" />
+  </ItemGroup>
+  <!-- Source Files (excluding main.cpp) -->
+  <ItemGroup>
+    <ClCompile Include="..\source\DualSPHysicsAPI.cpp" />
+    <ClCompile Include="..\source\DsphStepEngine.cpp" />
+    <ClCompile Include="..\source\Functions.cpp" />
+    <ClCompile Include="..\source\FunctionsCuda.cpp" />
+    <ClCompile Include="..\source\FunGeo3d.cpp" />
+    <ClCompile Include="..\source\FunSphKernelsCfg.cpp" />
+    <ClCompile Include="..\source\JAppInfo.cpp" />
+    <ClCompile Include="..\source\JArraysCpu.cpp" />
+    <ClCompile Include="..\source\JArraysGpu.cpp" />
+    <ClCompile Include="..\source\JBinaryData.cpp" />
+    <ClCompile Include="..\source\JBoxDef.cpp" />
+    <ClCompile Include="..\source\JCaseVRes.cpp" />
+    <ClCompile Include="..\source\JCellDivCpu.cpp" />
+    <ClCompile Include="..\source\JCellDivCpuSingle.cpp" />
+    <ClCompile Include="..\source\JCellDivGpu.cpp" />
+    <ClCompile Include="..\source\JCellDivGpuSingle.cpp" />
+    <ClCompile Include="..\source\JCfgRunBase.cpp" />
+    <ClCompile Include="..\source\JChronoGeoObj.cpp" />
+    <ClCompile Include="..\source\JChronoObjects.cpp" />
+    <ClCompile Include="..\source\JComputeMotionRef.cpp" />
+    <ClCompile Include="..\source\JDataArrays.cpp" />
+    <ClCompile Include="..\source\JDebugSphCpu.cpp" />
+    <ClCompile Include="..\source\JDebugSphGpu.cpp" />
+    <ClCompile Include="..\source\JDsAccInput.cpp" />
+    <ClCompile Include="..\source\JDsDamping.cpp" />
+    <ClCompile Include="..\source\JDsDcell.cpp" />
+    <ClCompile Include="..\source\JDsExtraData.cpp" />
+    <ClCompile Include="..\source\JDsFixedDt.cpp" />
+    <ClCompile Include="..\source\JDsFtForcePoints.cpp" />
+    <ClCompile Include="..\source\JDsGaugeItem.cpp" />
+    <ClCompile Include="..\source\JDsGaugeSystem.cpp" />
+    <ClCompile Include="..\source\JDsGpuInfo.cpp" />
+    <ClCompile Include="..\source\JDsInitialize.cpp" />
+    <ClCompile Include="..\source\JDsMooredFloatings.cpp" />
+    <ClCompile Include="..\source\JDsMotion.cpp" />
+    <ClCompile Include="..\source\JDsOutputParts.cpp" />
+    <ClCompile Include="..\source\JDsOutputTime.cpp" />
+    <ClCompile Include="..\source\JDsPartFloatSave.cpp" />
+    <ClCompile Include="..\source\JDsPartMotionSave.cpp" />
+    <ClCompile Include="..\source\JDsPartsInit.cpp" />
+    <ClCompile Include="..\source\JDsPartsOut.cpp" />
+    <ClCompile Include="..\source\JDsPips.cpp" />
+    <ClCompile Include="..\source\JDsSaveDt.cpp" />
+    <ClCompile Include="..\source\JDsTimers.cpp" />
+    <ClCompile Include="..\source\JDsphConfig.cpp" />
+    <ClCompile Include="..\source\JDsViscoInput.cpp" />
+    <ClCompile Include="..\source\JDsVresData.cpp" />
+    <ClCompile Include="..\source\JException.cpp" />
+    <ClCompile Include="..\source\JLinearValue.cpp" />
+    <ClCompile Include="..\source\JLog2.cpp" />
+    <ClCompile Include="..\source\JMeshData.cpp" />
+    <ClCompile Include="..\source\JMeshTDatas.cpp" />
+    <ClCompile Include="..\source\JMeshTDatasDsVel.cpp" />
+    <ClCompile Include="..\source\JMeshTDatasLoad.cpp" />
+    <ClCompile Include="..\source\JMeshTDatasSave.cpp" />
+    <ClCompile Include="..\source\JMeshTDatasXml.cpp" />
+    <ClCompile Include="..\source\JMLPistonsGpu.cpp" />
+    <ClCompile Include="..\source\JMotion.cpp" />
+    <ClCompile Include="..\source\JMotionData.cpp" />
+    <ClCompile Include="..\source\JMotionList.cpp" />
+    <ClCompile Include="..\source\JMotionMov.cpp" />
+    <ClCompile Include="..\source\JMotionObj.cpp" />
+    <ClCompile Include="..\source\JMotionPos.cpp" />
+    <ClCompile Include="..\source\JObject.cpp" />
+    <ClCompile Include="..\source\JObjectGpu.cpp" />
+    <ClCompile Include="..\source\JOutputCsv.cpp" />
+    <ClCompile Include="..\source\JPartDataBi4.cpp" />
+    <ClCompile Include="..\source\JPartDataHead.cpp" />
+    <ClCompile Include="..\source\JPartFloatInfoBi4.cpp" />
+    <ClCompile Include="..\source\JPartMotRefBi4Save.cpp" />
+    <ClCompile Include="..\source\JPartOutBi4Save.cpp" />
+    <ClCompile Include="..\source\JPartsLoad4.cpp" />
+    <ClCompile Include="..\source\JRadixSort.cpp" />
+    <ClCompile Include="..\source\JRangeFilter.cpp" />
+    <ClCompile Include="..\source\JReadDatafile.cpp" />
+    <ClCompile Include="..\source\JRelaxZonesGpu.cpp" />
+    <ClCompile Include="..\source\JSaveCsv2.cpp" />
+    <ClCompile Include="..\source\JSimpleNeigs.cpp" />
+    <ClCompile Include="..\source\JSph.cpp" />
+    <ClCompile Include="..\source\JSphCfgRun.cpp" />
+    <ClCompile Include="..\source\JSphCpu.cpp" />
+    <ClCompile Include="..\source\JSphCpuSingle.cpp" />
+    <ClCompile Include="..\source\JSphCpuSingle_InOut.cpp" />
+    <ClCompile Include="..\source\JSphCpuSingle_VRes.cpp" />
+    <ClCompile Include="..\source\JSphCpu_InOut.cpp" />
+    <ClCompile Include="..\source\JSphCpu_VRes.cpp" />
+    <ClCompile Include="..\source\JSphCpu_mdbc.cpp" />
+    <ClCompile Include="..\source\JSphCpu_preloop.cpp" />
+    <ClCompile Include="..\source\JSphFlexStruc.cpp" />
+    <ClCompile Include="..\source\JSphGpu.cpp" />
+    <ClCompile Include="..\source\JSphGpuSingle.cpp" />
+    <ClCompile Include="..\source\JSphGpuSingle_InOut.cpp" />
+    <ClCompile Include="..\source\JSphGpuSingle_VRes.cpp" />
+    <ClCompile Include="..\source\JSphInOut.cpp" />
+    <ClCompile Include="..\source\JSphInOutGridData.cpp" />
+    <ClCompile Include="..\source\JSphInOutPoints.cpp" />
+    <ClCompile Include="..\source\JSphInOutVel.cpp" />
+    <ClCompile Include="..\source\JSphInOutVelAwas.cpp" />
+    <ClCompile Include="..\source\JSphInOutZone.cpp" />
+    <ClCompile Include="..\source\JSphInOutZsurf.cpp" />
+    <ClCompile Include="..\source\JSphMk.cpp" />
+    <ClCompile Include="..\source\JSphShifting.cpp" />
+    <ClCompile Include="..\source\JSphShiftingAdv.cpp" />
+    <ClCompile Include="..\source\JSphVRes.cpp" />
+    <ClCompile Include="..\source\JSphVResZone.cpp" />
+    <ClCompile Include="..\source\JSpVtkData.cpp" />
+    <ClCompile Include="..\source\JSpVtkShape.cpp" />
+    <ClCompile Include="..\source\JTimeControl.cpp" />
+    <ClCompile Include="..\source\JTrianglesMesh.cpp" />
+    <ClCompile Include="..\source\JVResDataLimits.cpp" />
+    <ClCompile Include="..\source\JWaveSpectrumGpu.cpp" />
+    <ClCompile Include="..\source\JXml.cpp" />
+    <ClCompile Include="..\source\JCaseCtes.cpp" />
+    <ClCompile Include="..\source\JCaseEParms.cpp" />
+    <ClCompile Include="..\source\JCaseParts.cpp" />
+    <ClCompile Include="..\source\JCaseProperties.cpp" />
+    <ClCompile Include="..\source\randomc.cpp" />
+    <ClCompile Include="..\source\tinystr.cpp" />
+    <ClCompile Include="..\source\tinyxml.cpp" />
+    <ClCompile Include="..\source\tinyxmlerror.cpp" />
+    <ClCompile Include="..\source\tinyxmlparser.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 12.8.targets" />
+  </ImportGroup>
+</Project>
