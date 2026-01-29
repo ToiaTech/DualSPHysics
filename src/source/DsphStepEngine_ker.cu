@@ -588,4 +588,312 @@ void ZeroFloat3(float3* ptr, cudaStream_t stm) {
   }
 }
 
+//------------------------------------------------------------------------------
+/// CUDA kernel: Zero an array of float3 values.
+//------------------------------------------------------------------------------
+__global__ void KerZeroFloat3Array(float3* ptr, unsigned int count) {
+  const unsigned int p = blockIdx.x * blockDim.x + threadIdx.x;
+  if(p < count) {
+    ptr[p] = make_float3(0.0f, 0.0f, 0.0f);
+  }
+}
+
+//------------------------------------------------------------------------------
+/// Zero an array of float3 values on device.
+//------------------------------------------------------------------------------
+void ZeroFloat3Array(float3* ptr, unsigned int count, cudaStream_t stm) {
+  if(ptr && count > 0) {
+    dim3 sgrid = GetGridSize(count, BSIZE);
+    KerZeroFloat3Array<<<sgrid, BSIZE, 0, stm>>>(ptr, count);
+  }
+}
+
+//==============================================================================
+// Boundary-Fluid Force Computation Kernel
+//==============================================================================
+
+//------------------------------------------------------------------------------
+/// Device function: Compute Wendland kernel value.
+/// Returns W(r, h) for Wendland C2 kernel.
+//------------------------------------------------------------------------------
+__device__ float WendlandKernel(float r, float h) {
+  const float q = r / h;
+  if(q >= 2.0f) return 0.0f;
+
+  // Wendland C2 kernel: (1 - q/2)^4 * (1 + 2q)
+  // Normalization: 21 / (16 * pi * h^3) in 3D
+  const float oneMinusHalfQ = 1.0f - 0.5f * q;
+  const float kernel = oneMinusHalfQ * oneMinusHalfQ * oneMinusHalfQ * oneMinusHalfQ * (1.0f + 2.0f * q);
+
+  // 3D normalization factor
+  const float h3 = h * h * h;
+  const float alpha = 21.0f / (16.0f * 3.14159265f * h3);
+
+  return alpha * kernel;
+}
+
+//------------------------------------------------------------------------------
+/// Device function: Compute Wendland kernel gradient magnitude.
+/// Returns dW/dr for Wendland C2 kernel.
+//------------------------------------------------------------------------------
+__device__ float WendlandKernelGrad(float r, float h) {
+  const float q = r / h;
+  if(q >= 2.0f || q < 1e-8f) return 0.0f;
+
+  // Derivative of Wendland C2: d/dr[(1-q/2)^4*(1+2q)]
+  // = -5q(1-q/2)^3 / h
+  const float oneMinusHalfQ = 1.0f - 0.5f * q;
+  const float gradKernel = -5.0f * q * oneMinusHalfQ * oneMinusHalfQ * oneMinusHalfQ / h;
+
+  // 3D normalization factor
+  const float h3 = h * h * h;
+  const float alpha = 21.0f / (16.0f * 3.14159265f * h3);
+
+  return alpha * gradKernel;
+}
+
+//------------------------------------------------------------------------------
+/// Device function: Compute pressure from density using Tait equation.
+//------------------------------------------------------------------------------
+__device__ float ComputePressure(float rho, float rho0, float cs0, float gamma) {
+  const float B = rho0 * cs0 * cs0 / gamma;
+  float pressure = B * (powf(rho / rho0, gamma) - 1.0f);
+  return fmaxf(pressure, 0.0f);  // Clamp negative pressures
+}
+
+//------------------------------------------------------------------------------
+/// Device function: Decode cell coordinates from cell code.
+//------------------------------------------------------------------------------
+__device__ void DecodeCell(unsigned int cellCode, unsigned int cell,
+                           unsigned int& cx, unsigned int& cy, unsigned int& cz) {
+  // Extract bit widths from cell code
+  const unsigned int bx = cellCode & 0x1F;
+  const unsigned int by = (cellCode >> 5) & 0x1F;
+  // const unsigned int bz = (cellCode >> 10) & 0x1F;  // Not needed
+
+  cx = cell & ((1u << bx) - 1);
+  cy = (cell >> bx) & ((1u << by) - 1);
+  cz = cell >> (bx + by);
+}
+
+//------------------------------------------------------------------------------
+/// Device function: Encode cell coordinates to cell index.
+//------------------------------------------------------------------------------
+__device__ unsigned int EncodeCell(unsigned int cellCode,
+                                    unsigned int cx, unsigned int cy, unsigned int cz) {
+  const unsigned int bx = cellCode & 0x1F;
+  const unsigned int by = (cellCode >> 5) & 0x1F;
+  return cx | (cy << bx) | (cz << (bx + by));
+}
+
+//------------------------------------------------------------------------------
+/// CUDA kernel: Compute fluid pressure forces on boundary particles.
+/// Searches for nearby fluid particles and accumulates pressure forces.
+//------------------------------------------------------------------------------
+__global__ void KerComputeBoundaryFluidForces(
+  unsigned int boundaryCount,
+  const float3* boundWorldPos,
+  const float3* boundWorldNorm,
+  float3 comPosition,
+  unsigned int np,
+  unsigned int npb,
+  const double2* fluidPosxy,
+  const double* fluidPosz,
+  const float4* fluidVelrho,
+  const int* cellBegin,
+  unsigned int cellCode,
+  double3 cellPosMin,
+  float cellSize,
+  float kernelH,
+  float kernelSize,
+  float massFluid,
+  float massBound,
+  float rho0,
+  float cs0,
+  float gamma,
+  float3* outForce,
+  float3* outTorque)
+{
+  // Shared memory for reduction
+  __shared__ float sfx[BSIZE];
+  __shared__ float sfy[BSIZE];
+  __shared__ float sfz[BSIZE];
+  __shared__ float stx[BSIZE];
+  __shared__ float sty[BSIZE];
+  __shared__ float stz[BSIZE];
+
+  const unsigned int tid = threadIdx.x;
+  const unsigned int p = blockIdx.x * blockDim.x + threadIdx.x;
+
+  float fx = 0, fy = 0, fz = 0;
+  float tx = 0, ty = 0, tz = 0;
+
+  if(p < boundaryCount) {
+    // Get boundary particle position
+    float3 bpos = boundWorldPos[p];
+
+    // Compute boundary particle pressure (assume reference density)
+    const float pressB = ComputePressure(rho0, rho0, cs0, gamma);
+    const float rho2B = rho0 * rho0;
+
+    // Compute cell for this boundary particle
+    double dx = double(bpos.x) - cellPosMin.x;
+    double dy = double(bpos.y) - cellPosMin.y;
+    double dz = double(bpos.z) - cellPosMin.z;
+
+    int cellX = int(dx / cellSize);
+    int cellY = int(dy / cellSize);
+    int cellZ = int(dz / cellSize);
+
+    // Extract cell grid dimensions from cell code
+    const unsigned int bx = cellCode & 0x1F;
+    const unsigned int by = (cellCode >> 5) & 0x1F;
+    const unsigned int bz = (cellCode >> 10) & 0x1F;
+    const int ncx = 1 << bx;
+    const int ncy = 1 << by;
+    const int ncz = 1 << bz;
+
+    // Search neighboring cells (3x3x3)
+    for(int cz = cellZ - 1; cz <= cellZ + 1; cz++) {
+      if(cz < 0 || cz >= ncz) continue;
+      for(int cy = cellY - 1; cy <= cellY + 1; cy++) {
+        if(cy < 0 || cy >= ncy) continue;
+        for(int cx = cellX - 1; cx <= cellX + 1; cx++) {
+          if(cx < 0 || cx >= ncx) continue;
+
+          // Get cell index
+          unsigned int cellIdx = cx | (cy << bx) | (cz << (bx + by));
+
+          // Get particle range for this cell
+          int cellStart = cellBegin[cellIdx];
+          int cellEnd = cellBegin[cellIdx + 1];
+
+          // Iterate over fluid particles in cell
+          for(int j = cellStart; j < cellEnd; j++) {
+            // Skip boundary particles (first npb particles)
+            if(j < (int)npb) continue;
+
+            // Get fluid particle position
+            double2 fposxy = fluidPosxy[j];
+            double fposz = fluidPosz[j];
+            float4 fvelrho = fluidVelrho[j];
+
+            // Compute distance vector (boundary - fluid)
+            float drx = bpos.x - float(fposxy.x);
+            float dry = bpos.y - float(fposxy.y);
+            float drz = bpos.z - float(fposz);
+            float r2 = drx*drx + dry*dry + drz*drz;
+            float r = sqrtf(r2);
+
+            // Check if within kernel support
+            if(r < kernelSize && r > 1e-8f) {
+              // Compute fluid pressure
+              float rhoF = fvelrho.w;
+              float pressF = ComputePressure(rhoF, rho0, cs0, gamma);
+              float rho2F = rhoF * rhoF;
+
+              // Compute kernel gradient
+              float gradW = WendlandKernelGrad(r, kernelH);
+
+              // Direction vector (normalized)
+              float invR = 1.0f / r;
+              float nx = drx * invR;
+              float ny = dry * invR;
+              float nz = drz * invR;
+
+              // SPH pressure force: F = -m_b * m_f * (p_f/rho_f^2 + p_b/rho_b^2) * gradW * n
+              float forceMag = -massBound * massFluid * (pressF / rho2F + pressB / rho2B) * gradW;
+
+              fx += forceMag * nx;
+              fy += forceMag * ny;
+              fz += forceMag * nz;
+            }
+          }
+        }
+      }
+    }
+
+    // Compute torque: tau = r x F
+    float3 r;
+    r.x = bpos.x - comPosition.x;
+    r.y = bpos.y - comPosition.y;
+    r.z = bpos.z - comPosition.z;
+
+    tx = r.y * fz - r.z * fy;
+    ty = r.z * fx - r.x * fz;
+    tz = r.x * fy - r.y * fx;
+  }
+
+  // Store to shared memory
+  sfx[tid] = fx;
+  sfy[tid] = fy;
+  sfz[tid] = fz;
+  stx[tid] = tx;
+  sty[tid] = ty;
+  stz[tid] = tz;
+  __syncthreads();
+
+  // Parallel reduction
+  for(unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if(tid < s) {
+      sfx[tid] += sfx[tid + s];
+      sfy[tid] += sfy[tid + s];
+      sfz[tid] += sfz[tid + s];
+      stx[tid] += stx[tid + s];
+      sty[tid] += sty[tid + s];
+      stz[tid] += stz[tid + s];
+    }
+    __syncthreads();
+  }
+
+  // First thread of each block writes partial result with atomics
+  if(tid == 0) {
+    atomicAdd(&outForce->x, sfx[0]);
+    atomicAdd(&outForce->y, sfy[0]);
+    atomicAdd(&outForce->z, sfz[0]);
+    atomicAdd(&outTorque->x, stx[0]);
+    atomicAdd(&outTorque->y, sty[0]);
+    atomicAdd(&outTorque->z, stz[0]);
+  }
+}
+
+//------------------------------------------------------------------------------
+/// Compute fluid pressure forces on boundary particles.
+//------------------------------------------------------------------------------
+void ComputeBoundaryFluidForces(
+  unsigned int boundaryCount,
+  const float3* boundWorldPos,
+  const float3* boundWorldNorm,
+  float3 comPosition,
+  unsigned int np,
+  unsigned int npb,
+  const double2* fluidPosxy,
+  const double* fluidPosz,
+  const float4* fluidVelrho,
+  const int* cellBegin,
+  unsigned int cellCode,
+  double3 cellPosMin,
+  float cellSize,
+  float kernelH,
+  float kernelSize,
+  float massFluid,
+  float massBound,
+  float rho0,
+  float cs0,
+  float gamma,
+  float3* outForce,
+  float3* outTorque,
+  cudaStream_t stm)
+{
+  if(boundaryCount > 0) {
+    dim3 sgrid = GetGridSize(boundaryCount, BSIZE);
+    KerComputeBoundaryFluidForces<<<sgrid, BSIZE, 0, stm>>>(
+      boundaryCount, boundWorldPos, boundWorldNorm, comPosition,
+      np, npb, fluidPosxy, fluidPosz, fluidVelrho,
+      cellBegin, cellCode, cellPosMin, cellSize,
+      kernelH, kernelSize, massFluid, massBound, rho0, cs0, gamma,
+      outForce, outTorque);
+  }
+}
+
 } // namespace dsphker

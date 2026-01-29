@@ -254,6 +254,10 @@ private:
   float3* BoundWorldNormg;      // Transformed world normals
   float3* BoundVelg;            // Boundary particle velocities
 
+  // GPU arrays for force accumulation (one per boundary object)
+  float3* BoundForcesg;         // Accumulated forces per boundary (device)
+  float3* BoundTorquesg;        // Accumulated torques per boundary (device)
+
   // Private methods
   void AllocateGpuMemory(unsigned int np);
   void FreeGpuMemory();

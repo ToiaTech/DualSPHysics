@@ -63,6 +63,7 @@ DsphStepEngine::DsphStepEngine()
   , BoundLocalPosg(nullptr), BoundLocalNormg(nullptr)
   , BoundWorldPosg(nullptr), BoundWorldNormg(nullptr)
   , BoundVelg(nullptr)
+  , BoundForcesg(nullptr), BoundTorquesg(nullptr)
 {
   MapPosMin = MapPosMax = TDouble3(0);
   MapRealPosMin = TDouble3(0);
@@ -155,6 +156,8 @@ void DsphStepEngine::FreeGpuMemory() {
   if(BoundWorldPosg) { cudaFree(BoundWorldPosg); BoundWorldPosg = nullptr; }
   if(BoundWorldNormg) { cudaFree(BoundWorldNormg); BoundWorldNormg = nullptr; }
   if(BoundVelg) { cudaFree(BoundVelg); BoundVelg = nullptr; }
+  if(BoundForcesg) { cudaFree(BoundForcesg); BoundForcesg = nullptr; }
+  if(BoundTorquesg) { cudaFree(BoundTorquesg); BoundTorquesg = nullptr; }
 
   if(CellDivSingle) { delete CellDivSingle; CellDivSingle = nullptr; }
 }
@@ -797,6 +800,11 @@ bool DsphStepEngine::StepAsync(double dt) {
     // 4. Post-interaction (reductions, cleanup)
     PosInteraction_Forces();
 
+    // 4b. Accumulate forces on dynamic boundary objects
+    if(BoundaryCount > 0) {
+      AccumulateBoundaryForces();
+    }
+
     // 5. Time integration
     if(Config.stepMethod == STEP_Verlet) {
       ComputeStepVerlet(dt);
@@ -981,6 +989,20 @@ int DsphStepEngine::AddBoundaryObject(
   if(BoundaryCount >= DSPH_MAX_BOUNDARIES) return -1;
   if(particleCount == 0 || !localPositions || !centerOfMass) return -1;
 
+  // Allocate force/torque arrays on first boundary
+  if(BoundaryCount == 0) {
+    cudaMalloc(&BoundForcesg, DSPH_MAX_BOUNDARIES * sizeof(float3));
+    cudaMalloc(&BoundTorquesg, DSPH_MAX_BOUNDARIES * sizeof(float3));
+    if(!BoundForcesg || !BoundTorquesg) {
+      if(BoundForcesg) { cudaFree(BoundForcesg); BoundForcesg = nullptr; }
+      if(BoundTorquesg) { cudaFree(BoundTorquesg); BoundTorquesg = nullptr; }
+      return -1;
+    }
+    // Zero the arrays
+    cudaMemsetAsync(BoundForcesg, 0, DSPH_MAX_BOUNDARIES * sizeof(float3), Stream);
+    cudaMemsetAsync(BoundTorquesg, 0, DSPH_MAX_BOUNDARIES * sizeof(float3), Stream);
+  }
+
   unsigned int boundaryId = BoundaryCount;
 
   // Calculate total boundary particles needed (sum of all boundary objects + new one)
@@ -1116,21 +1138,62 @@ void DsphStepEngine::TransformBoundaryParticles(unsigned int boundaryId) {
 }
 
 void DsphStepEngine::AccumulateBoundaryForces() {
-  // Note: This is a placeholder for now. In a full implementation,
-  // we would extract forces from the SPH interaction that acts on
-  // boundary particles. DualSPHysics computes these forces during
-  // Interaction_Forces for floating bodies using StFloatingData.
-  //
-  // For now, forces remain at zero. The full implementation would
-  // require integrating with the floating body force computation
-  // or adding separate force accumulation during SPH interaction.
+  if(BoundaryCount == 0 || !BoundForcesg || !BoundTorquesg) return;
+  if(!CellDivSingle) return;
+
+  // Get cell division data for neighbor search
+  const int* cellBegin = CellDivSingle->GetBeginCell();
+  if(!cellBegin) return;
+
+  // Zero force/torque accumulators for all boundaries
+  dsphker::ZeroFloat3Array(BoundForcesg, BoundaryCount, Stream);
+  dsphker::ZeroFloat3Array(BoundTorquesg, BoundaryCount, Stream);
+
+  // For each boundary, compute fluid forces using SPH interaction
+  for(unsigned int i = 0; i < BoundaryCount; i++) {
+    StDsphBoundaryObject& obj = BoundaryObjects[i];
+    if(!obj.isActive) continue;
+
+    // Compute forces from fluid onto this boundary
+    dsphker::ComputeBoundaryFluidForces(
+      obj.particleCount,
+      BoundWorldPosg + obj.particleStart,
+      BoundWorldNormg + obj.particleStart,
+      obj.position,
+      Np, Npb,
+      Posxyg, Poszg, Velrhog,
+      cellBegin,
+      DomCellCode,
+      make_double3(DomPosMin.x, DomPosMin.y, DomPosMin.z),
+      Scell,
+      Config.kernelH,
+      Config.kernelSize,
+      Config.massFluid,
+      Config.massBound,
+      Config.rho0,
+      Config.cs0,
+      Config.gamma,
+      BoundForcesg + i,
+      BoundTorquesg + i,
+      Stream
+    );
+  }
+
+  // Copy results back to CPU (host) for each boundary
+  cudaStreamSynchronize(Stream);
+
+  std::vector<float3> forces(BoundaryCount);
+  std::vector<float3> torques(BoundaryCount);
+  cudaMemcpy(forces.data(), BoundForcesg, BoundaryCount * sizeof(float3), cudaMemcpyDeviceToHost);
+  cudaMemcpy(torques.data(), BoundTorquesg, BoundaryCount * sizeof(float3), cudaMemcpyDeviceToHost);
 
   for(unsigned int i = 0; i < BoundaryCount; i++) {
-    if(!BoundaryObjects[i].isActive || !BoundaryObjects[i].isDynamic) continue;
-
-    // In future: accumulate forces from SPH interaction
-    // This would require modifying Interaction_Forces to track
-    // forces on these boundary particles separately.
+    BoundaryObjects[i].accumulatedForce.x += forces[i].x;
+    BoundaryObjects[i].accumulatedForce.y += forces[i].y;
+    BoundaryObjects[i].accumulatedForce.z += forces[i].z;
+    BoundaryObjects[i].accumulatedTorque.x += torques[i].x;
+    BoundaryObjects[i].accumulatedTorque.y += torques[i].y;
+    BoundaryObjects[i].accumulatedTorque.z += torques[i].z;
   }
 }
 

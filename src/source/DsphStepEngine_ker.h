@@ -119,8 +119,43 @@ void AccumulateBoundaryForces(
   float3* outTorque,              // Output: accumulated torque (device ptr, single value)
   cudaStream_t stm = nullptr);
 
+/// Compute fluid pressure forces on boundary particles using SPH interaction.
+/// This performs neighbor search and computes pressure forces from fluid onto boundary.
+/// Force formula: F = -m_b * sum_f[ m_f * (p_f/rho_f^2 + p_b/rho_b^2) * grad(W) ]
+void ComputeBoundaryFluidForces(
+  unsigned int boundaryCount,       // Number of boundary particles
+  const float3* boundWorldPos,      // Boundary world positions
+  const float3* boundWorldNorm,     // Boundary world normals
+  float3 comPosition,               // Center of mass for torque calc
+  // Fluid particle data
+  unsigned int np,                  // Total particles
+  unsigned int npb,                 // Boundary particles in main arrays
+  const double2* fluidPosxy,        // Fluid positions XY
+  const double* fluidPosz,          // Fluid position Z
+  const float4* fluidVelrho,        // Fluid velocities + density
+  // Cell division data
+  const int* cellBegin,             // Cell begin indices
+  unsigned int cellCode,            // Cell encoding
+  double3 cellPosMin,               // Cell minimum position
+  float cellSize,                   // Cell size
+  // SPH parameters
+  float kernelH,                    // Smoothing length
+  float kernelSize,                 // Kernel support radius (2h)
+  float massFluid,                  // Fluid particle mass
+  float massBound,                  // Boundary particle mass
+  float rho0,                       // Reference density
+  float cs0,                        // Speed of sound
+  float gamma,                      // Polytropic constant
+  // Output (device pointers)
+  float3* outForce,                 // Output: accumulated force
+  float3* outTorque,                // Output: accumulated torque
+  cudaStream_t stm = nullptr);
+
 /// Zero a float3 value on device
 void ZeroFloat3(float3* ptr, cudaStream_t stm = nullptr);
+
+/// Zero an array of float3 values on device
+void ZeroFloat3Array(float3* ptr, unsigned int count, cudaStream_t stm = nullptr);
 
 } // namespace dsphker
 
