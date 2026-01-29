@@ -700,7 +700,8 @@ __global__ void KerComputeBoundaryFluidForces(
   const double2* fluidPosxy,
   const double* fluidPosz,
   const float4* fluidVelrho,
-  const int* cellBegin,
+  const int2* beginEndCell,
+  unsigned int cellFluid,
   unsigned int cellCode,
   double3 cellPosMin,
   float cellSize,
@@ -761,12 +762,14 @@ __global__ void KerComputeBoundaryFluidForces(
         for(int cx = cellX - 1; cx <= cellX + 1; cx++) {
           if(cx < 0 || cx >= ncx) continue;
 
-          // Get cell index
+          // Get cell index for fluid cells (offset by cellFluid)
           unsigned int cellIdx = cx | (cy << bx) | (cz << (bx + by));
 
-          // Get particle range for this cell
-          int cellStart = cellBegin[cellIdx];
-          int cellEnd = cellBegin[cellIdx + 1];
+          // Get particle range for this cell (int2: .x=begin, .y=end)
+          // Fluid cells start at beginEndCell[cellFluid + cellIdx]
+          int2 cellRange = beginEndCell[cellFluid + cellIdx];
+          int cellStart = cellRange.x;
+          int cellEnd = cellRange.y;
 
           // Iterate over fluid particles in cell
           for(int j = cellStart; j < cellEnd; j++) {
@@ -870,7 +873,8 @@ void ComputeBoundaryFluidForces(
   const double2* fluidPosxy,
   const double* fluidPosz,
   const float4* fluidVelrho,
-  const int* cellBegin,
+  const int2* beginEndCell,
+  unsigned int cellFluid,
   unsigned int cellCode,
   double3 cellPosMin,
   float cellSize,
@@ -890,7 +894,7 @@ void ComputeBoundaryFluidForces(
     KerComputeBoundaryFluidForces<<<sgrid, BSIZE, 0, stm>>>(
       boundaryCount, boundWorldPos, boundWorldNorm, comPosition,
       np, npb, fluidPosxy, fluidPosz, fluidVelrho,
-      cellBegin, cellCode, cellPosMin, cellSize,
+      beginEndCell, cellFluid, cellCode, cellPosMin, cellSize,
       kernelH, kernelSize, massFluid, massBound, rho0, cs0, gamma,
       outForce, outTorque);
   }

@@ -1141,9 +1141,9 @@ void DsphStepEngine::AccumulateBoundaryForces() {
   if(BoundaryCount == 0 || !BoundForcesg || !BoundTorquesg) return;
   if(!CellDivSingle) return;
 
-  // Get cell division data for neighbor search
-  const int* cellBegin = CellDivSingle->GetBeginCell();
-  if(!cellBegin) return;
+  // Get cell division data for neighbor search (int2: .x=begin, .y=end)
+  const int2* beginEndCell = CellDivSingle->GetBeginCell();
+  if(!beginEndCell) return;
 
   // Zero force/torque accumulators for all boundaries
   dsphker::ZeroFloat3Array(BoundForcesg, BoundaryCount, Stream);
@@ -1162,7 +1162,8 @@ void DsphStepEngine::AccumulateBoundaryForces() {
       obj.position,
       Np, Npb,
       Posxyg, Poszg, Velrhog,
-      cellBegin,
+      beginEndCell,
+      DivData.cellfluid,
       DomCellCode,
       make_double3(DomPosMin.x, DomPosMin.y, DomPosMin.z),
       Scell,

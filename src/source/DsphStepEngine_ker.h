@@ -134,7 +134,8 @@ void ComputeBoundaryFluidForces(
   const double* fluidPosz,          // Fluid position Z
   const float4* fluidVelrho,        // Fluid velocities + density
   // Cell division data
-  const int* cellBegin,             // Cell begin indices
+  const int2* beginEndCell,         // Cell begin/end indices (int2: .x=begin, .y=end)
+  unsigned int cellFluid,           // Offset to fluid cells in beginEndCell
   unsigned int cellCode,            // Cell encoding
   double3 cellPosMin,               // Cell minimum position
   float cellSize,                   // Cell size
