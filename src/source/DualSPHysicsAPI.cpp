@@ -115,6 +115,39 @@ struct DsphSimConfig {
 };
 
 //==============================================================================
+// Fluid Type Definition (pre-preparation)
+//==============================================================================
+struct DsphFluidTypeDef {
+  float density;
+  float viscosity;
+  float surfaceTension;
+  bool active;
+
+  DsphFluidTypeDef() : density(1000.0f), viscosity(0.01f), surfaceTension(0.0f), active(false) {}
+};
+
+struct DsphFluidTypeStorage {
+  DsphFluidTypeDef types[DSPH_MAX_FLUID_TYPES];
+  unsigned int count;
+
+  DsphFluidTypeStorage() : count(1) {
+    // Initialize default fluid type 0
+    types[0].density = 1000.0f;
+    types[0].viscosity = 0.01f;
+    types[0].surfaceTension = 0.0f;
+    types[0].active = true;
+  }
+
+  void Clear() {
+    count = 1;
+    types[0].active = true;
+    for(int i = 1; i < DSPH_MAX_FLUID_TYPES; i++) {
+      types[i].active = false;
+    }
+  }
+};
+
+//==============================================================================
 // Particle Storage Structure (pre-preparation)
 //==============================================================================
 struct DsphParticleStorage {
@@ -159,6 +192,7 @@ struct DsphSimulation_ {
   // Configuration (pre-preparation)
   DsphSimConfig config;
   DsphParticleStorage particles;
+  DsphFluidTypeStorage fluidTypes;
   DsphExternalBuffer externalBuffer;
 
   // Runtime state
@@ -414,6 +448,7 @@ DUALSPH_CAPI int DsphResetSimulation(DsphSimHandle handle) {
 #endif
 
   handle->particles.Clear();
+  handle->fluidTypes.Clear();
   handle->prepared = false;
   handle->simulationTime = 0.0;
   handle->stepCount = 0;
@@ -657,7 +692,8 @@ DUALSPH_CAPI int DsphSet2DMode(DsphSimHandle handle, int enable, double yPositio
 DUALSPH_CAPI int DsphAddFluidParticles(DsphSimHandle handle,
                                         const double* positions,
                                         const double* velocities,
-                                        unsigned int count) {
+                                        unsigned int count,
+                                        int fluidType) {
   if(!handle) {
     SetError("Invalid simulation handle");
     return DSPH_ERROR_INVALID_PARAM;
@@ -669,6 +705,10 @@ DUALSPH_CAPI int DsphAddFluidParticles(DsphSimHandle handle,
   if(!positions || count == 0) {
     SetError("Invalid positions array");
     return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(fluidType < 0 || (unsigned int)fluidType >= handle->fluidTypes.count) {
+    SetError("Invalid fluid type ID - create type first with DsphCreateFluidType");
+    return DSPH_ERROR_INVALID_FLUID_TYPE;
   }
 
   try {
@@ -686,9 +726,9 @@ DUALSPH_CAPI int DsphAddFluidParticles(DsphSimHandle handle,
                   0, count * 3 * sizeof(double));
     }
 
-    // Store fluid type 0 for all particles added via this function
+    // Store fluid type for all particles
     size_t typeOffset = handle->particles.fluidTypes.size();
-    handle->particles.fluidTypes.resize(typeOffset + count, 0);
+    handle->particles.fluidTypes.resize(typeOffset + count, static_cast<unsigned char>(fluidType));
 
     return DSPH_SUCCESS;
   }
@@ -741,7 +781,8 @@ DUALSPH_CAPI int DsphAddBoundaryParticles(DsphSimHandle handle,
 DUALSPH_CAPI int DsphAddFluidBlock(DsphSimHandle handle,
                                     double minX, double minY, double minZ,
                                     double maxX, double maxY, double maxZ,
-                                    double velX, double velY, double velZ) {
+                                    double velX, double velY, double velZ,
+                                    int fluidType) {
   if(!handle) {
     SetError("Invalid simulation handle");
     return DSPH_ERROR_INVALID_PARAM;
@@ -779,7 +820,7 @@ DUALSPH_CAPI int DsphAddFluidBlock(DsphSimHandle handle,
     }
 
     return DsphAddFluidParticles(handle, positions.data(), velocities.data(),
-                                  static_cast<unsigned int>(positions.size() / 3));
+                                  static_cast<unsigned int>(positions.size() / 3), fluidType);
   }
   catch(const std::exception& e) {
     SetError(std::string("Failed to add fluid block: ") + e.what());
@@ -970,6 +1011,18 @@ DUALSPH_CAPI int DsphPrepare(DsphSimHandle handle) {
           handle->externalBuffer.maxParticles,
           handle->externalBuffer.writeFluidOnly
         );
+      }
+
+      // Update fluid type 0 properties if they were customized
+      if(handle->fluidTypes.types[0].active) {
+        handle->stepEngine->SetFluidTypeDensity(0, handle->fluidTypes.types[0].density);
+        handle->stepEngine->SetFluidTypeViscosity(0, handle->fluidTypes.types[0].viscosity);
+      }
+
+      // Create additional fluid types in step engine (type 0 already exists)
+      for(unsigned int i = 1; i < handle->fluidTypes.count; i++) {
+        const DsphFluidTypeDef& ft = handle->fluidTypes.types[i];
+        handle->stepEngine->CreateFluidType(ft.density, ft.viscosity, ft.surfaceTension);
       }
 
       // Upload per-particle fluid types if any were set
@@ -1639,9 +1692,31 @@ DUALSPH_CAPI int DsphCreateFluidType(
     SetError("Invalid simulation handle");
     return DSPH_ERROR_INVALID_PARAM;
   }
+  if(density <= 0) {
+    SetError("Density must be positive");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+
+  // Before preparation: store in handle's fluid type storage
+  if(!handle->prepared) {
+    if(handle->fluidTypes.count >= DSPH_MAX_FLUID_TYPES) {
+      SetError("Maximum fluid type limit reached");
+      return DSPH_ERROR_FLUID_TYPE_LIMIT;
+    }
+
+    unsigned int typeId = handle->fluidTypes.count;
+    DsphFluidTypeDef& ft = handle->fluidTypes.types[typeId];
+    ft.density = density;
+    ft.viscosity = viscosity;
+    ft.surfaceTension = surfaceTension;
+    ft.active = true;
+    handle->fluidTypes.count++;
+
+    return (int)typeId;
+  }
 
 #ifdef _WITHGPU
-  if(handle->prepared && handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
     // After preparation: use step engine's multi-fluid support
     int typeId = handle->stepEngine->CreateFluidType(density, viscosity, surfaceTension);
     if(typeId < 0) {
@@ -1652,75 +1727,7 @@ DUALSPH_CAPI int DsphCreateFluidType(
   }
 #endif
 
-  // Before preparation: type 0 sets global properties
-  // Return 0 for default fluid type
-  if(!handle->prepared) {
-    handle->config.rho0 = density;
-    handle->config.viscoValue = viscosity;
-    // surfaceTension not yet supported in pre-preparation phase
-    return 0;  // Return fluid type 0
-  }
-
-  SetError("Multi-fluid requires GPU");
-  return DSPH_ERROR_NO_GPU;
-}
-
-DUALSPH_CAPI int DsphAddFluidParticlesTyped(
-    DsphSimHandle handle,
-    int fluidType,
-    const float* positions,
-    const float* velocities,
-    unsigned int count)
-{
-  if(!handle || !positions || count == 0) {
-    SetError("Invalid parameters");
-    return DSPH_ERROR_INVALID_PARAM;
-  }
-  if(fluidType < 0 || fluidType >= DSPH_MAX_FLUID_TYPES) {
-    SetError("Invalid fluid type ID");
-    return DSPH_ERROR_INVALID_FLUID_TYPE;
-  }
-
-  if(!handle->prepared) {
-    // Before preparation: store particles with their fluid type
-    try {
-      size_t offset = handle->particles.fluidPositions.size();
-      handle->particles.fluidPositions.resize(offset + count * 3);
-      handle->particles.fluidVelocities.resize(offset + count * 3);
-
-      for(unsigned int i = 0; i < count * 3; i++) {
-        handle->particles.fluidPositions[offset + i] = static_cast<double>(positions[i]);
-        handle->particles.fluidVelocities[offset + i] = velocities ? static_cast<double>(velocities[i]) : 0.0;
-      }
-
-      // Store fluid type for each particle
-      size_t typeOffset = handle->particles.fluidTypes.size();
-      handle->particles.fluidTypes.resize(typeOffset + count, static_cast<unsigned char>(fluidType));
-
-      return DSPH_SUCCESS;
-    }
-    catch(const std::exception& e) {
-      SetError(std::string("Failed to add typed fluid particles: ") + e.what());
-      return DSPH_ERROR_MEMORY;
-    }
-  }
-
-#ifdef _WITHGPU
-  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
-    // After preparation: validate fluid type
-    if((unsigned int)fluidType >= handle->stepEngine->GetFluidTypeCount()) {
-      SetError("Invalid fluid type ID");
-      return DSPH_ERROR_INVALID_FLUID_TYPE;
-    }
-
-    // Dynamic particle addition not yet supported
-    // For now, users should set particle types after preparation using SetParticleFluidType
-    SetError("Dynamic particle addition after preparation not yet supported. Use DsphSetParticleFluidType instead.");
-    return DSPH_ERROR_NOT_IMPLEMENTED;
-  }
-#endif
-
-  SetError("Typed particles require GPU");
+  SetError("Multi-fluid requires GPU after preparation");
   return DSPH_ERROR_NO_GPU;
 }
 
@@ -1736,8 +1743,8 @@ DUALSPH_CAPI int DsphGetFluidTypeCount(DsphSimHandle handle) {
   }
 #endif
 
-  // Before preparation or CPU: return 1 (default fluid type)
-  return 1;
+  // Before preparation: return count from fluid type storage
+  return (int)handle->fluidTypes.count;
 }
 
 DUALSPH_CAPI int DsphGetFluidTypeParticleCount(

@@ -301,11 +301,13 @@ DUALSPH_CAPI int DsphSet2DMode(DsphSimHandle handle, int enable, double yPositio
 /// @param positions Array of positions [x0,y0,z0, x1,y1,z1, ...] (count*3 doubles)
 /// @param velocities Array of velocities [vx0,vy0,vz0, ...] (count*3 doubles), can be NULL for zero velocity
 /// @param count Number of particles to add
+/// @param fluidType Fluid type ID (0 = default, create additional types with DsphCreateFluidType)
 /// @return DSPH_SUCCESS on success, error code otherwise
 DUALSPH_CAPI int DsphAddFluidParticles(DsphSimHandle handle,
                                         const double* positions,
                                         const double* velocities,
-                                        unsigned int count);
+                                        unsigned int count,
+                                        int fluidType);
 
 /// Add boundary particles to the simulation.
 /// For mDBC, normals should point into the fluid domain.
@@ -325,11 +327,13 @@ DUALSPH_CAPI int DsphAddBoundaryParticles(DsphSimHandle handle,
 /// @param minX, minY, minZ Lower corner of fluid block
 /// @param maxX, maxY, maxZ Upper corner of fluid block
 /// @param velX, velY, velZ Initial velocity for all particles in block
+/// @param fluidType Fluid type ID (0 = default, create additional types with DsphCreateFluidType)
 /// @return DSPH_SUCCESS on success, error code otherwise
 DUALSPH_CAPI int DsphAddFluidBlock(DsphSimHandle handle,
                                     double minX, double minY, double minZ,
                                     double maxX, double maxY, double maxZ,
-                                    double velX, double velY, double velZ);
+                                    double velX, double velY, double velZ,
+                                    int fluidType);
 
 /// Get the total number of particles currently defined.
 /// @param handle Simulation handle
@@ -629,39 +633,30 @@ DUALSPH_CAPI int DsphGetBoundaryState(
 );
 
 //==============================================================================
-// Multiple Fluid Type Support (Experimental)
+// Multiple Fluid Type Support
 //==============================================================================
 
 /// Create a new fluid type with specific properties.
-/// Call this before adding particles. Cannot create new types after DsphPrepare().
+/// Call this BEFORE adding particles with that type, and before DsphPrepare().
+/// Fluid type 0 is the default type with properties from DsphSetReferenceDensity/DsphSetViscosity.
+///
+/// Typical workflow:
+///   1. DsphCreateFluidType(sim, 900, 0.1, 0) -> returns type 1 (oil)
+///   2. DsphCreateFluidType(sim, 1000, 0.001, 0) -> returns type 2 (water)
+///   3. DsphAddFluidBlock(sim, ..., type=1) for oil particles
+///   4. DsphAddFluidBlock(sim, ..., type=2) for water particles
+///   5. DsphPrepare(sim)
 ///
 /// @param handle Simulation handle
 /// @param density Rest density in kg/m^3 (typical: water=1000, oil=900)
-/// @param viscosity Dynamic viscosity in Pa*s (typical: water=0.001, oil=0.1)
-/// @param surfaceTension Surface tension coefficient in N/m (typical: water=0.0728)
-/// @return Fluid type handle (>= 0) on success, negative error code on failure
-///
-/// @note Multi-fluid interaction is experimental and may not be fully stable.
+/// @param viscosity Dynamic viscosity coefficient (typical: 0.01 for water)
+/// @param surfaceTension Surface tension coefficient (for future use, set to 0)
+/// @return Fluid type ID (>= 1) on success, negative error code on failure
 DUALSPH_CAPI int DsphCreateFluidType(
     DsphSimHandle handle,
     float density,
     float viscosity,
     float surfaceTension
-);
-
-/// Add fluid particles of a specific type.
-/// @param handle Simulation handle
-/// @param fluidType Fluid type handle from DsphCreateFluidType()
-/// @param positions Particle positions (x,y,z triplets) - count*3 floats
-/// @param velocities Initial velocities (x,y,z triplets), or NULL for zero - count*3 floats
-/// @param count Number of particles
-/// @return DSPH_SUCCESS on success, error code on failure
-DUALSPH_CAPI int DsphAddFluidParticlesTyped(
-    DsphSimHandle handle,
-    int fluidType,
-    const float* positions,
-    const float* velocities,
-    unsigned int count
 );
 
 /// Get number of fluid types in the simulation.
