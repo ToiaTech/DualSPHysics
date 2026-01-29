@@ -64,7 +64,7 @@ extern "C" {
 // Limits
 //==============================================================================
 #define DSPH_MAX_FLUID_TYPES  16   // Maximum number of fluid types
-#define DSPH_MAX_BOUNDARIES   32   // Maximum number of dynamic boundaries
+#define DSPH_MAX_BOUNDARIES   16   // Maximum number of dynamic boundaries
 
 //==============================================================================
 // Device Types
@@ -665,6 +665,8 @@ DUALSPH_CAPI int DsphCreateFluidType(
 DUALSPH_CAPI int DsphGetFluidTypeCount(DsphSimHandle handle);
 
 /// Get particle count for a specific fluid type.
+/// NOTE: This function only works after DsphPrepare() has been called.
+/// Before preparation, it returns 0 for all types.
 /// @param handle Simulation handle
 /// @param fluidType Fluid type handle
 /// @param outCount Pointer to receive particle count

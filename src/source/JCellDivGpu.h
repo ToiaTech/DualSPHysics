@@ -178,6 +178,7 @@ public:
   void SortDataArrays(const float3* a,float3* a2);
   void SortDataArrays(const float* a,float* a2);
   void SortDataArrays(const unsigned* a,const float4* b,unsigned* a2,float4* b2);
+  void SortDataArrays(const unsigned char* a,unsigned char* a2);
   void SortArrayPeriParent(unsigned* aux,const unsigned* a,unsigned* a2);
 
   float* GetAuxMem(unsigned size);

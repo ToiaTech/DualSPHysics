@@ -900,4 +900,167 @@ void ComputeBoundaryFluidForces(
   }
 }
 
+//==============================================================================
+// Multi-Fluid Type Support Kernels
+//==============================================================================
+
+/// Structure for fluid type properties on GPU (matches StDsphFluidType)
+struct GpuFluidType {
+  float rho0;             // Reference density
+  float viscosity;        // Viscosity coefficient
+  float mass;             // Particle mass
+  float cs0;              // Speed of sound
+  float cteB;             // Pressure constant B
+};
+
+/// Constant memory for fluid type properties (max 16 types)
+__constant__ GpuFluidType c_FluidTypes[16];
+__constant__ unsigned int c_FluidTypeCount;
+
+//------------------------------------------------------------------------------
+/// Upload fluid type properties to GPU constant memory.
+//------------------------------------------------------------------------------
+void UploadFluidTypes(
+  const float* rho0,
+  const float* viscosity,
+  const float* mass,
+  const float* cs0,
+  const float* cteB,
+  unsigned int count)
+{
+  if(count > 16) count = 16;
+
+  GpuFluidType types[16];
+  for(unsigned int i = 0; i < count; i++) {
+    types[i].rho0 = rho0[i];
+    types[i].viscosity = viscosity[i];
+    types[i].mass = mass[i];
+    types[i].cs0 = cs0[i];
+    types[i].cteB = cteB[i];
+  }
+
+  cudaMemcpyToSymbol(c_FluidTypes, types, count * sizeof(GpuFluidType));
+  cudaMemcpyToSymbol(c_FluidTypeCount, &count, sizeof(unsigned int));
+}
+
+//------------------------------------------------------------------------------
+/// CUDA kernel: Initialize particle densities based on fluid type.
+/// Sets velrho.w to the reference density of each particle's fluid type.
+//------------------------------------------------------------------------------
+__global__ void KerInitDensitiesFromFluidTypes(
+  unsigned int npf,
+  unsigned int npb,
+  const unsigned char* fluidTypeg,
+  float4* velrhog)
+{
+  const unsigned int p = blockIdx.x * blockDim.x + threadIdx.x;
+  if(p >= npf) return;
+
+  // Fluid particle index (offset by boundary particles)
+  const unsigned int particleIdx = npb + p;
+
+  // Get fluid type for this particle
+  unsigned char fluidType = fluidTypeg[particleIdx];
+  if(fluidType >= c_FluidTypeCount) fluidType = 0;
+
+  // Update density to reference density for this fluid type
+  float4 vr = velrhog[particleIdx];
+  vr.w = c_FluidTypes[fluidType].rho0;
+  velrhog[particleIdx] = vr;
+}
+
+//------------------------------------------------------------------------------
+/// Initialize particle densities from fluid types.
+//------------------------------------------------------------------------------
+void InitDensitiesFromFluidTypes(
+  unsigned int npf,
+  unsigned int npb,
+  const unsigned char* fluidTypeg,
+  float4* velrhog,
+  cudaStream_t stm)
+{
+  if(npf > 0) {
+    dim3 sgrid = GetGridSize(npf, BSIZE);
+    KerInitDensitiesFromFluidTypes<<<sgrid, BSIZE, 0, stm>>>(
+      npf, npb, fluidTypeg, velrhog);
+  }
+}
+
+//------------------------------------------------------------------------------
+/// CUDA kernel: Get per-particle viscosity from fluid types.
+/// Useful for applying per-fluid viscosity corrections.
+//------------------------------------------------------------------------------
+__global__ void KerGetPerParticleViscosity(
+  unsigned int npf,
+  unsigned int npb,
+  const unsigned char* fluidTypeg,
+  float* viscosityOut)
+{
+  const unsigned int p = blockIdx.x * blockDim.x + threadIdx.x;
+  if(p >= npf) return;
+
+  const unsigned int particleIdx = npb + p;
+  unsigned char fluidType = fluidTypeg[particleIdx];
+  if(fluidType >= c_FluidTypeCount) fluidType = 0;
+
+  viscosityOut[p] = c_FluidTypes[fluidType].viscosity;
+}
+
+//------------------------------------------------------------------------------
+/// Get per-particle viscosity array.
+//------------------------------------------------------------------------------
+void GetPerParticleViscosity(
+  unsigned int npf,
+  unsigned int npb,
+  const unsigned char* fluidTypeg,
+  float* viscosityOut,
+  cudaStream_t stm)
+{
+  if(npf > 0) {
+    dim3 sgrid = GetGridSize(npf, BSIZE);
+    KerGetPerParticleViscosity<<<sgrid, BSIZE, 0, stm>>>(
+      npf, npb, fluidTypeg, viscosityOut);
+  }
+}
+
+//------------------------------------------------------------------------------
+/// CUDA kernel: Compute per-particle pressure constants from fluid types.
+/// This is needed for multi-fluid pressure computation.
+//------------------------------------------------------------------------------
+__global__ void KerGetPerParticlePressureParams(
+  unsigned int npf,
+  unsigned int npb,
+  const unsigned char* fluidTypeg,
+  float* rho0Out,
+  float* cteBOut)
+{
+  const unsigned int p = blockIdx.x * blockDim.x + threadIdx.x;
+  if(p >= npf) return;
+
+  const unsigned int particleIdx = npb + p;
+  unsigned char fluidType = fluidTypeg[particleIdx];
+  if(fluidType >= c_FluidTypeCount) fluidType = 0;
+
+  rho0Out[p] = c_FluidTypes[fluidType].rho0;
+  cteBOut[p] = c_FluidTypes[fluidType].cteB;
+}
+
+//------------------------------------------------------------------------------
+/// Get per-particle pressure parameters.
+//------------------------------------------------------------------------------
+void GetPerParticlePressureParams(
+  unsigned int npf,
+  unsigned int npb,
+  const unsigned char* fluidTypeg,
+  float* rho0Out,
+  float* cteBOut,
+  cudaStream_t stm)
+{
+  if(npf > 0) {
+    dim3 sgrid = GetGridSize(npf, BSIZE);
+    KerGetPerParticlePressureParams<<<sgrid, BSIZE, 0, stm>>>(
+      npf, npb, fluidTypeg, rho0Out, cteBOut);
+  }
+}
+
 } // namespace dsphker

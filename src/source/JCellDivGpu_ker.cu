@@ -824,6 +824,33 @@ void SortDataParticles(unsigned np,unsigned pini,const unsigned* sortpart
   }
 }
 
+//==============================================================================
+/// Reorders particle data according to sortpart (for unsigned char values).
+/// Reordena datos de particulas segun sortpart (para valores unsigned char).
+//==============================================================================
+__global__ void KerSortDataParticles(unsigned n,unsigned pini
+  ,const unsigned* sortpart,const unsigned char* a,unsigned char* a2)
+{
+  const unsigned p=blockIdx.x*blockDim.x + threadIdx.x; //-Particle number.
+  if(p<n){
+    const unsigned oldpos=(p<pini? p: sortpart[p]);
+    a2[p]=a[oldpos];
+  }
+}
+
+//==============================================================================
+/// Reorders particle data according to sortpart (for unsigned char values).
+/// Reordena datos de particulas segun sortpart (para valores unsigned char).
+//==============================================================================
+void SortDataParticles(unsigned np,unsigned pini,const unsigned* sortpart
+  ,const unsigned char* a,unsigned char* a2)
+{
+  if(np){
+    dim3 sgrid=GetSimpleGridSize(np,DIVBSIZE);
+    KerSortDataParticles <<<sgrid,DIVBSIZE>>>(np,pini,sortpart,a,a2);
+  }
+}
+
 //------------------------------------------------------------------------------
 /// Reorders PeriParent references.
 //------------------------------------------------------------------------------

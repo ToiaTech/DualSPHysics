@@ -158,6 +158,48 @@ void ZeroFloat3(float3* ptr, cudaStream_t stm = nullptr);
 /// Zero an array of float3 values on device
 void ZeroFloat3Array(float3* ptr, unsigned int count, cudaStream_t stm = nullptr);
 
+//==============================================================================
+// Multi-Fluid Type Support
+//==============================================================================
+
+/// Upload fluid type properties to GPU constant memory.
+/// Arrays must have 'count' elements. Max 16 fluid types.
+void UploadFluidTypes(
+  const float* rho0,
+  const float* viscosity,
+  const float* mass,
+  const float* cs0,
+  const float* cteB,
+  unsigned int count);
+
+/// Initialize particle densities based on their fluid types.
+/// Sets velrho.w to the reference density of each particle's fluid type.
+void InitDensitiesFromFluidTypes(
+  unsigned int npf,              // Number of fluid particles
+  unsigned int npb,              // Number of boundary particles (offset)
+  const unsigned char* fluidTypeg,  // Per-particle fluid type array
+  float4* velrhog,               // Velocity+density array to update
+  cudaStream_t stm = nullptr);
+
+/// Get per-particle viscosity values based on fluid types.
+/// Output array should have npf elements.
+void GetPerParticleViscosity(
+  unsigned int npf,
+  unsigned int npb,
+  const unsigned char* fluidTypeg,
+  float* viscosityOut,
+  cudaStream_t stm = nullptr);
+
+/// Get per-particle pressure parameters based on fluid types.
+/// Output arrays should have npf elements.
+void GetPerParticlePressureParams(
+  unsigned int npf,
+  unsigned int npb,
+  const unsigned char* fluidTypeg,
+  float* rho0Out,
+  float* cteBOut,
+  cudaStream_t stm = nullptr);
+
 } // namespace dsphker
 
 #endif // _DsphStepEngine_ker_

@@ -415,6 +415,15 @@ void JCellDivGpu::SortDataArrays(const unsigned* a,const float4* b
 }
 
 //==============================================================================
+/// Reorders data arrays according to SortPart (for unsigned char values).
+/// Ordena arrays de datos segun SortPart (para valores unsigned char).
+//==============================================================================
+void JCellDivGpu::SortDataArrays(const unsigned char* a, unsigned char* a2){
+  const unsigned pini=(DivideFull? 0: NpbFinal);
+  cudiv::SortDataParticles(Nptot,pini,SortPart,a,a2);
+}
+
+//==============================================================================
 /// Reorders PeriParent references.
 //==============================================================================
 void JCellDivGpu::SortArrayPeriParent(unsigned* aux,const unsigned* a

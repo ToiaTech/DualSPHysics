@@ -447,15 +447,6 @@ public:
   bool GetFluidTypeProperties(unsigned int fluidTypeId, float* outRho0,
                               float* outViscosity, float* outSurfaceTension);
 
-  /// Add fluid particles with a specific fluid type.
-  /// Call before Initialize() or use SetParticleFluidType() after initialization.
-  bool AddFluidParticlesTyped(
-      const double* positions,        // Interleaved xyz
-      const double* velocities,       // Interleaved xyz (optional, can be nullptr)
-      unsigned int count,
-      unsigned int fluidTypeId
-  );
-
   /// Set fluid type for a specific particle (by particle index within fluid particles).
   bool SetParticleFluidType(unsigned int particleIndex, unsigned int fluidTypeId);
 
@@ -467,6 +458,10 @@ public:
 
   /// Get the number of particles with a specific fluid type.
   unsigned int GetFluidTypeParticleCount(unsigned int fluidTypeId);
+
+  /// Upload fluid type properties to GPU and initialize particle densities.
+  /// Call this after SetAllParticleFluidTypes() to ensure particles have correct initial densities.
+  void ApplyFluidTypeProperties();
 
   /// Reset simulation to initial state.
   void Reset();

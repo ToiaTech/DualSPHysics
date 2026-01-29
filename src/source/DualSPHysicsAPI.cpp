@@ -1032,6 +1032,9 @@ DUALSPH_CAPI int DsphPrepare(DsphSimHandle handle) {
           static_cast<unsigned int>(handle->particles.fluidTypes.size())
         );
       }
+
+      // Apply fluid type properties (uploads to GPU and initializes densities)
+      handle->stepEngine->ApplyFluidTypeProperties();
     }
 #endif
 

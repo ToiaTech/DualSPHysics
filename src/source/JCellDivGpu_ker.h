@@ -74,6 +74,8 @@ void SortDataParticles(unsigned np,unsigned pini,const unsigned* sortpart
   ,const float* a,float* a2);
 void SortDataParticles(unsigned np,unsigned pini,const unsigned* sortpart
   ,const unsigned* a,const float4* b,unsigned* a2,float4* b2);
+void SortDataParticles(unsigned np,unsigned pini,const unsigned* sortpart
+  ,const unsigned char* a,unsigned char* a2);
 
 void SortArrayPeriParent(unsigned np,const unsigned* sortpart,unsigned* rsortpart
   ,const unsigned* a,unsigned* a2);

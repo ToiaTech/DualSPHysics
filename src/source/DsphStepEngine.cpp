@@ -552,6 +552,15 @@ void DsphStepEngine::SortParticleArrays() {
     std::swap(VelrhoM1g, velrhoM1Tmp);
     cudaFree(velrhoM1Tmp);
   }
+
+  // Sort fluid type array
+  if(FluidTypeg) {
+    unsigned char* fluidTypeTmp = nullptr;
+    cudaMalloc(&fluidTypeTmp, Np * sizeof(unsigned char));
+    CellDivSingle->SortDataArrays(FluidTypeg, fluidTypeTmp);
+    std::swap(FluidTypeg, fluidTypeTmp);
+    cudaFree(fluidTypeTmp);
+  }
 }
 
 //==============================================================================
@@ -1387,23 +1396,6 @@ bool DsphStepEngine::GetFluidTypeProperties(unsigned int fluidTypeId, float* out
   return true;
 }
 
-bool DsphStepEngine::AddFluidParticlesTyped(
-    const double* positions,
-    const double* velocities,
-    unsigned int count,
-    unsigned int fluidTypeId)
-{
-  // This method is for adding particles before initialization
-  // For now, we don't support dynamic particle addition
-  // Return false to indicate this requires re-initialization
-  if(Initialized) return false;
-  if(fluidTypeId >= DSPH_MAX_FLUID_TYPES) return false;
-
-  // Placeholder - full implementation would need to track pending particles
-  // and incorporate them during Initialize()
-  return false;
-}
-
 bool DsphStepEngine::SetParticleFluidType(unsigned int particleIndex, unsigned int fluidTypeId) {
   if(!Initialized) return false;
   if(particleIndex >= Npf) return false;
@@ -1458,6 +1450,35 @@ unsigned int DsphStepEngine::GetFluidTypeParticleCount(unsigned int fluidTypeId)
   }
 
   return count;
+}
+
+void DsphStepEngine::ApplyFluidTypeProperties() {
+  if(!Initialized || FluidTypeCount == 0) return;
+
+  // Prepare arrays for upload
+  std::vector<float> rho0(FluidTypeCount);
+  std::vector<float> viscosity(FluidTypeCount);
+  std::vector<float> mass(FluidTypeCount);
+  std::vector<float> cs0(FluidTypeCount);
+  std::vector<float> cteB(FluidTypeCount);
+
+  for(unsigned int i = 0; i < FluidTypeCount; i++) {
+    rho0[i] = FluidTypes[i].rho0;
+    viscosity[i] = FluidTypes[i].viscosity;
+    mass[i] = FluidTypes[i].mass;
+    cs0[i] = FluidTypes[i].cs0;
+    cteB[i] = FluidTypes[i].cteB;
+  }
+
+  // Upload fluid type properties to GPU constant memory
+  dsphker::UploadFluidTypes(
+    rho0.data(), viscosity.data(), mass.data(), cs0.data(), cteB.data(),
+    FluidTypeCount);
+
+  // Initialize particle densities based on fluid types
+  dsphker::InitDensitiesFromFluidTypes(Npf, Npb, FluidTypeg, Velrhog, Stream);
+
+  cudaStreamSynchronize(Stream);
 }
 
 #endif // _WITHGPU
