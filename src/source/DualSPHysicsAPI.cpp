@@ -1613,7 +1613,7 @@ DUALSPH_CAPI int DsphGetBoundaryState(
 }
 
 //==============================================================================
-// Multiple Fluid Type Support (Experimental)
+// Multiple Fluid Type Support
 //==============================================================================
 DUALSPH_CAPI int DsphCreateFluidType(
     DsphSimHandle handle,
@@ -1625,21 +1625,30 @@ DUALSPH_CAPI int DsphCreateFluidType(
     SetError("Invalid simulation handle");
     return DSPH_ERROR_INVALID_PARAM;
   }
-  if(handle->prepared) {
-    SetError("Cannot create fluid types after preparation");
-    return DSPH_ERROR_ALREADY_PREPARED;
+
+#ifdef _WITHGPU
+  if(handle->prepared && handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    // After preparation: use step engine's multi-fluid support
+    int typeId = handle->stepEngine->CreateFluidType(density, viscosity, surfaceTension);
+    if(typeId < 0) {
+      SetError("Failed to create fluid type (limit reached)");
+      return DSPH_ERROR_FLUID_TYPE_LIMIT;
+    }
+    return typeId;
+  }
+#endif
+
+  // Before preparation: type 0 sets global properties
+  // Return 0 for default fluid type
+  if(!handle->prepared) {
+    handle->config.rho0 = density;
+    handle->config.viscoValue = viscosity;
+    // surfaceTension not yet supported in pre-preparation phase
+    return 0;  // Return fluid type 0
   }
 
-  // NOTE: Multi-fluid support requires significant changes to particle type
-  // handling in DualSPHysics core. This is a placeholder.
-  // For now, return type 0 (default fluid) and ignore the parameters.
-  // The parameters could be used to configure the global fluid properties.
-
-  handle->config.rho0 = density;
-  handle->config.viscoValue = viscosity;
-  // surfaceTension not yet supported
-
-  return 0;  // Return fluid type 0
+  SetError("Multi-fluid requires GPU");
+  return DSPH_ERROR_NO_GPU;
 }
 
 DUALSPH_CAPI int DsphAddFluidParticlesTyped(
@@ -1653,21 +1662,43 @@ DUALSPH_CAPI int DsphAddFluidParticlesTyped(
     SetError("Invalid parameters");
     return DSPH_ERROR_INVALID_PARAM;
   }
-  if(fluidType != 0) {
-    SetError("Only fluid type 0 is currently supported");
-    return DSPH_ERROR_INVALID_FLUID_TYPE;
+
+  if(!handle->prepared) {
+    // Before preparation: only type 0 supported, store normally
+    if(fluidType != 0) {
+      SetError("Only fluid type 0 is supported before preparation");
+      return DSPH_ERROR_INVALID_FLUID_TYPE;
+    }
+
+    // Convert to double and use existing function
+    std::vector<double> posDouble(count * 3);
+    std::vector<double> velDouble(count * 3);
+    for(unsigned int i = 0; i < count * 3; i++) {
+      posDouble[i] = static_cast<double>(positions[i]);
+      velDouble[i] = velocities ? static_cast<double>(velocities[i]) : 0.0;
+    }
+
+    return DsphAddFluidParticles(handle, posDouble.data(),
+                                  velocities ? velDouble.data() : nullptr, count);
   }
 
-  // Convert to double and use existing function
-  std::vector<double> posDouble(count * 3);
-  std::vector<double> velDouble(count * 3);
-  for(unsigned int i = 0; i < count * 3; i++) {
-    posDouble[i] = static_cast<double>(positions[i]);
-    velDouble[i] = velocities ? static_cast<double>(velocities[i]) : 0.0;
-  }
+#ifdef _WITHGPU
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    // After preparation: validate fluid type
+    if(fluidType < 0 || (unsigned int)fluidType >= handle->stepEngine->GetFluidTypeCount()) {
+      SetError("Invalid fluid type ID");
+      return DSPH_ERROR_INVALID_FLUID_TYPE;
+    }
 
-  return DsphAddFluidParticles(handle, posDouble.data(),
-                                velocities ? velDouble.data() : nullptr, count);
+    // Dynamic particle addition not yet supported
+    // For now, users should set particle types after preparation using SetParticleFluidType
+    SetError("Dynamic particle addition after preparation not yet supported. Use DsphSetParticleFluidType instead.");
+    return DSPH_ERROR_NOT_IMPLEMENTED;
+  }
+#endif
+
+  SetError("Typed particles require GPU");
+  return DSPH_ERROR_NO_GPU;
 }
 
 DUALSPH_CAPI int DsphGetFluidTypeCount(DsphSimHandle handle) {
@@ -1675,7 +1706,14 @@ DUALSPH_CAPI int DsphGetFluidTypeCount(DsphSimHandle handle) {
     SetError("Invalid simulation handle");
     return DSPH_ERROR_INVALID_PARAM;
   }
-  // Always return 1 for now (single fluid type)
+
+#ifdef _WITHGPU
+  if(handle->prepared && handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    return (int)handle->stepEngine->GetFluidTypeCount();
+  }
+#endif
+
+  // Before preparation or CPU: return 1 (default fluid type)
   return 1;
 }
 
@@ -1706,16 +1744,176 @@ DUALSPH_CAPI int DsphSetFluidTypeViscosity(
     SetError("Invalid simulation handle");
     return DSPH_ERROR_INVALID_PARAM;
   }
+
+#ifdef _WITHGPU
+  if(handle->prepared && handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    if(fluidType < 0 || (unsigned int)fluidType >= handle->stepEngine->GetFluidTypeCount()) {
+      SetError("Invalid fluid type ID");
+      return DSPH_ERROR_INVALID_FLUID_TYPE;
+    }
+
+    if(!handle->stepEngine->SetFluidTypeViscosity((unsigned int)fluidType, viscosity)) {
+      SetError("Failed to set fluid type viscosity");
+      return DSPH_ERROR_INVALID_FLUID_TYPE;
+    }
+    return DSPH_SUCCESS;
+  }
+#endif
+
+  // Before preparation: update config
+  if(!handle->prepared && fluidType == 0) {
+    handle->config.viscoValue = viscosity;
+    return DSPH_SUCCESS;
+  }
+
   if(fluidType != 0) {
     SetError("Invalid fluid type");
     return DSPH_ERROR_INVALID_FLUID_TYPE;
   }
 
-  // Update viscosity (would need runtime constant update for GPU)
-  handle->config.viscoValue = viscosity;
+  return DSPH_SUCCESS;
+}
 
-  // NOTE: Changing viscosity at runtime requires updating GPU constants
-  // This is a placeholder - needs proper implementation
+DUALSPH_CAPI int DsphSetFluidTypeDensity(
+    DsphSimHandle handle,
+    int fluidType,
+    float density)
+{
+  if(!handle) {
+    SetError("Invalid simulation handle");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(density <= 0) {
+    SetError("Density must be positive");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+
+#ifdef _WITHGPU
+  if(handle->prepared && handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    if(fluidType < 0 || (unsigned int)fluidType >= handle->stepEngine->GetFluidTypeCount()) {
+      SetError("Invalid fluid type ID");
+      return DSPH_ERROR_INVALID_FLUID_TYPE;
+    }
+
+    if(!handle->stepEngine->SetFluidTypeDensity((unsigned int)fluidType, density)) {
+      SetError("Failed to set fluid type density");
+      return DSPH_ERROR_INVALID_FLUID_TYPE;
+    }
+    return DSPH_SUCCESS;
+  }
+#endif
+
+  // Before preparation: update config for type 0
+  if(!handle->prepared && fluidType == 0) {
+    handle->config.rho0 = density;
+    return DSPH_SUCCESS;
+  }
+
+  if(fluidType != 0) {
+    SetError("Invalid fluid type");
+    return DSPH_ERROR_INVALID_FLUID_TYPE;
+  }
+
+  return DSPH_SUCCESS;
+}
+
+DUALSPH_CAPI int DsphSetParticleFluidType(
+    DsphSimHandle handle,
+    unsigned int particleIndex,
+    int fluidType)
+{
+  if(!handle) {
+    SetError("Invalid simulation handle");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(!handle->prepared) {
+    SetError("Simulation not prepared");
+    return DSPH_ERROR_NOT_PREPARED;
+  }
+
+#ifdef _WITHGPU
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    if(fluidType < 0 || (unsigned int)fluidType >= handle->stepEngine->GetFluidTypeCount()) {
+      SetError("Invalid fluid type ID");
+      return DSPH_ERROR_INVALID_FLUID_TYPE;
+    }
+
+    if(!handle->stepEngine->SetParticleFluidType(particleIndex, (unsigned int)fluidType)) {
+      SetError("Failed to set particle fluid type (invalid particle index)");
+      return DSPH_ERROR_INVALID_PARAM;
+    }
+    return DSPH_SUCCESS;
+  }
+#endif
+
+  SetError("Particle fluid types require GPU");
+  return DSPH_ERROR_NO_GPU;
+}
+
+DUALSPH_CAPI int DsphGetParticleFluidType(
+    DsphSimHandle handle,
+    unsigned int particleIndex,
+    int* outFluidType)
+{
+  if(!handle || !outFluidType) {
+    SetError("Invalid parameters");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(!handle->prepared) {
+    SetError("Simulation not prepared");
+    return DSPH_ERROR_NOT_PREPARED;
+  }
+
+#ifdef _WITHGPU
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    *outFluidType = (int)handle->stepEngine->GetParticleFluidType(particleIndex);
+    return DSPH_SUCCESS;
+  }
+#endif
+
+  // CPU fallback: all particles are type 0
+  *outFluidType = 0;
+  return DSPH_SUCCESS;
+}
+
+DUALSPH_CAPI int DsphGetFluidTypeProperties(
+    DsphSimHandle handle,
+    int fluidType,
+    float* outDensity,
+    float* outViscosity,
+    float* outSurfaceTension)
+{
+  if(!handle) {
+    SetError("Invalid simulation handle");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+
+#ifdef _WITHGPU
+  if(handle->prepared && handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    if(fluidType < 0 || (unsigned int)fluidType >= handle->stepEngine->GetFluidTypeCount()) {
+      SetError("Invalid fluid type ID");
+      return DSPH_ERROR_INVALID_FLUID_TYPE;
+    }
+
+    if(!handle->stepEngine->GetFluidTypeProperties((unsigned int)fluidType,
+                                                    outDensity, outViscosity, outSurfaceTension)) {
+      SetError("Failed to get fluid type properties");
+      return DSPH_ERROR_INVALID_FLUID_TYPE;
+    }
+    return DSPH_SUCCESS;
+  }
+#endif
+
+  // Before preparation or CPU: return config values for type 0
+  if(fluidType != 0) {
+    SetError("Invalid fluid type");
+    return DSPH_ERROR_INVALID_FLUID_TYPE;
+  }
+
+  if(outDensity) *outDensity = (float)handle->config.rho0;
+  if(outViscosity) *outViscosity = (float)handle->config.viscoValue;
+  if(outSurfaceTension) *outSurfaceTension = 0.0f;
+
   return DSPH_SUCCESS;
 }
 

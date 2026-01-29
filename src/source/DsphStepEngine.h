@@ -115,6 +115,28 @@ struct StDsphEngineConfig {
 /// Dynamic boundary object data
 //==============================================================================
 #define DSPH_MAX_BOUNDARIES 16
+#define DSPH_MAX_FLUID_TYPES 16
+
+/// Fluid type properties
+struct StDsphFluidType {
+  float rho0;             // Reference density [kg/m3]
+  float viscosity;        // Viscosity coefficient
+  float surfaceTension;   // Surface tension coefficient (for future use)
+  float mass;             // Particle mass (computed from rho0 and dp)
+  float cs0;              // Speed of sound (computed or set)
+  float cteB;             // Pressure constant B = rho0 * cs0^2 / gamma
+  bool active;            // Is this fluid type in use
+
+  StDsphFluidType() {
+    rho0 = 1000.0f;
+    viscosity = 0.01f;
+    surfaceTension = 0.0f;
+    mass = 0.0f;
+    cs0 = 0.0f;
+    cteB = 0.0f;
+    active = false;
+  }
+};
 
 struct StDsphBoundaryObject {
   // Particle range within global boundary arrays
@@ -258,6 +280,11 @@ private:
   float3* BoundForcesg;         // Accumulated forces per boundary (device)
   float3* BoundTorquesg;        // Accumulated torques per boundary (device)
 
+  // Multiple fluid types
+  StDsphFluidType FluidTypes[DSPH_MAX_FLUID_TYPES];  // Fluid property table
+  unsigned int FluidTypeCount;   // Number of active fluid types
+  unsigned char* FluidTypeg;     // Per-particle fluid type ID (GPU)
+
   // Private methods
   void AllocateGpuMemory(unsigned int np);
   void FreeGpuMemory();
@@ -399,6 +426,41 @@ public:
       float* outOrientation,
       float* outAngularVelocity
   );
+
+  //============================================================================
+  // Multiple Fluid Type Methods
+  //============================================================================
+
+  /// Create a new fluid type with specified properties. Returns fluid type ID or -1 on failure.
+  int CreateFluidType(float rho0, float viscosity, float surfaceTension = 0.0f);
+
+  /// Set density for a fluid type. Returns false if invalid type ID.
+  bool SetFluidTypeDensity(unsigned int fluidTypeId, float rho0);
+
+  /// Set viscosity for a fluid type. Returns false if invalid type ID.
+  bool SetFluidTypeViscosity(unsigned int fluidTypeId, float viscosity);
+
+  /// Get number of active fluid types.
+  unsigned int GetFluidTypeCount() const { return FluidTypeCount; }
+
+  /// Get fluid type properties. Returns false if invalid type ID.
+  bool GetFluidTypeProperties(unsigned int fluidTypeId, float* outRho0,
+                              float* outViscosity, float* outSurfaceTension);
+
+  /// Add fluid particles with a specific fluid type.
+  /// Call before Initialize() or use SetParticleFluidType() after initialization.
+  bool AddFluidParticlesTyped(
+      const double* positions,        // Interleaved xyz
+      const double* velocities,       // Interleaved xyz (optional, can be nullptr)
+      unsigned int count,
+      unsigned int fluidTypeId
+  );
+
+  /// Set fluid type for a specific particle (by particle index within fluid particles).
+  bool SetParticleFluidType(unsigned int particleIndex, unsigned int fluidTypeId);
+
+  /// Get fluid type for a specific particle.
+  unsigned int GetParticleFluidType(unsigned int particleIndex);
 
   /// Reset simulation to initial state.
   void Reset();

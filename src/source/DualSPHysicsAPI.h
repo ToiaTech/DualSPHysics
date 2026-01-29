@@ -685,6 +685,54 @@ DUALSPH_CAPI int DsphSetFluidTypeViscosity(
     float viscosity
 );
 
+/// Set density for a specific fluid type (can be called during simulation).
+/// @param handle Simulation handle
+/// @param fluidType Fluid type handle
+/// @param density New density value in kg/m^3
+/// @return DSPH_SUCCESS on success, error code on failure
+DUALSPH_CAPI int DsphSetFluidTypeDensity(
+    DsphSimHandle handle,
+    int fluidType,
+    float density
+);
+
+/// Get properties of a specific fluid type.
+/// @param handle Simulation handle
+/// @param fluidType Fluid type handle
+/// @param outDensity Pointer to receive density (can be NULL)
+/// @param outViscosity Pointer to receive viscosity (can be NULL)
+/// @param outSurfaceTension Pointer to receive surface tension (can be NULL)
+/// @return DSPH_SUCCESS on success, error code on failure
+DUALSPH_CAPI int DsphGetFluidTypeProperties(
+    DsphSimHandle handle,
+    int fluidType,
+    float* outDensity,
+    float* outViscosity,
+    float* outSurfaceTension
+);
+
+/// Set the fluid type for a specific particle.
+/// @param handle Simulation handle
+/// @param particleIndex Particle index (0 to particle count - 1)
+/// @param fluidType Fluid type handle
+/// @return DSPH_SUCCESS on success, error code on failure
+DUALSPH_CAPI int DsphSetParticleFluidType(
+    DsphSimHandle handle,
+    unsigned int particleIndex,
+    int fluidType
+);
+
+/// Get the fluid type of a specific particle.
+/// @param handle Simulation handle
+/// @param particleIndex Particle index (0 to particle count - 1)
+/// @param outFluidType Pointer to receive fluid type
+/// @return DSPH_SUCCESS on success, error code on failure
+DUALSPH_CAPI int DsphGetParticleFluidType(
+    DsphSimHandle handle,
+    unsigned int particleIndex,
+    int* outFluidType
+);
+
 //==============================================================================
 // Error Handling
 //==============================================================================

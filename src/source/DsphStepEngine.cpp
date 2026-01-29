@@ -64,6 +64,7 @@ DsphStepEngine::DsphStepEngine()
   , BoundWorldPosg(nullptr), BoundWorldNormg(nullptr)
   , BoundVelg(nullptr)
   , BoundForcesg(nullptr), BoundTorquesg(nullptr)
+  , FluidTypeCount(0), FluidTypeg(nullptr)
 {
   MapPosMin = MapPosMax = TDouble3(0);
   MapRealPosMin = TDouble3(0);
@@ -122,6 +123,10 @@ void DsphStepEngine::AllocateGpuMemory(unsigned int np) {
   AuxMemSize = cusph::ReduMaxFloatSize(np);
   cudaMalloc(&AuxMemg, AuxMemSize * sizeof(float));
 
+  // Per-particle fluid type ID (only for fluid particles, allocated for all)
+  cudaMalloc(&FluidTypeg, np * sizeof(unsigned char));
+  cudaMemset(FluidTypeg, 0, np * sizeof(unsigned char));  // Default to fluid type 0
+
   cudaError_t err = cudaGetLastError();
   if(err != cudaSuccess) {
     FreeGpuMemory();
@@ -149,6 +154,7 @@ void DsphStepEngine::FreeGpuMemory() {
   if(VelrhoPreg) { cudaFree(VelrhoPreg); VelrhoPreg = nullptr; }
   if(VelrhoM1g) { cudaFree(VelrhoM1g); VelrhoM1g = nullptr; }
   if(AuxMemg) { cudaFree(AuxMemg); AuxMemg = nullptr; }
+  if(FluidTypeg) { cudaFree(FluidTypeg); FluidTypeg = nullptr; }
 
   // Free boundary arrays
   if(BoundLocalPosg) { cudaFree(BoundLocalPosg); BoundLocalPosg = nullptr; }
@@ -439,6 +445,17 @@ bool DsphStepEngine::Initialize(const StDsphEngineConfig& config,
     VerletStep = 0;
     ViscDtMax = 0;
     AceMax = 0;
+
+    // Initialize default fluid type (type 0)
+    FluidTypeCount = 1;
+    FluidTypes[0].rho0 = Config.rho0;
+    FluidTypes[0].viscosity = Config.viscoValue;
+    FluidTypes[0].surfaceTension = 0.0f;
+    FluidTypes[0].mass = Config.massFluid;
+    FluidTypes[0].cs0 = Config.cs0;
+    FluidTypes[0].cteB = Config.cteB;
+    FluidTypes[0].active = true;
+
     Initialized = true;
 
     return true;
@@ -1302,6 +1319,115 @@ bool DsphStepEngine::GetBoundaryState(
   }
 
   return true;
+}
+
+//==============================================================================
+// Multiple Fluid Type Methods
+//==============================================================================
+
+int DsphStepEngine::CreateFluidType(float rho0, float viscosity, float surfaceTension) {
+  if(FluidTypeCount >= DSPH_MAX_FLUID_TYPES) return -1;
+
+  unsigned int typeId = FluidTypeCount;
+  StDsphFluidType& ft = FluidTypes[typeId];
+
+  ft.rho0 = rho0;
+  ft.viscosity = viscosity;
+  ft.surfaceTension = surfaceTension;
+  ft.active = true;
+
+  // Compute derived properties using same formulas as main config
+  double volume = Config.dp * Config.dp * Config.dp;
+  ft.mass = float(rho0 * volume);
+
+  // Speed of sound (proportional to reference density ratio)
+  ft.cs0 = Config.cs0 * sqrt(rho0 / Config.rho0);
+
+  // Pressure constant B = rho0 * cs0^2 / gamma
+  ft.cteB = rho0 * ft.cs0 * ft.cs0 / Config.gamma;
+
+  FluidTypeCount++;
+  return (int)typeId;
+}
+
+bool DsphStepEngine::SetFluidTypeDensity(unsigned int fluidTypeId, float rho0) {
+  if(fluidTypeId >= FluidTypeCount) return false;
+  if(!FluidTypes[fluidTypeId].active) return false;
+
+  StDsphFluidType& ft = FluidTypes[fluidTypeId];
+  ft.rho0 = rho0;
+
+  // Recompute derived properties
+  double volume = Config.dp * Config.dp * Config.dp;
+  ft.mass = float(rho0 * volume);
+  ft.cs0 = Config.cs0 * sqrt(rho0 / Config.rho0);
+  ft.cteB = rho0 * ft.cs0 * ft.cs0 / Config.gamma;
+
+  return true;
+}
+
+bool DsphStepEngine::SetFluidTypeViscosity(unsigned int fluidTypeId, float viscosity) {
+  if(fluidTypeId >= FluidTypeCount) return false;
+  if(!FluidTypes[fluidTypeId].active) return false;
+
+  FluidTypes[fluidTypeId].viscosity = viscosity;
+  return true;
+}
+
+bool DsphStepEngine::GetFluidTypeProperties(unsigned int fluidTypeId, float* outRho0,
+                                            float* outViscosity, float* outSurfaceTension) {
+  if(fluidTypeId >= FluidTypeCount) return false;
+  if(!FluidTypes[fluidTypeId].active) return false;
+
+  const StDsphFluidType& ft = FluidTypes[fluidTypeId];
+  if(outRho0) *outRho0 = ft.rho0;
+  if(outViscosity) *outViscosity = ft.viscosity;
+  if(outSurfaceTension) *outSurfaceTension = ft.surfaceTension;
+
+  return true;
+}
+
+bool DsphStepEngine::AddFluidParticlesTyped(
+    const double* positions,
+    const double* velocities,
+    unsigned int count,
+    unsigned int fluidTypeId)
+{
+  // This method is for adding particles before initialization
+  // For now, we don't support dynamic particle addition
+  // Return false to indicate this requires re-initialization
+  if(Initialized) return false;
+  if(fluidTypeId >= DSPH_MAX_FLUID_TYPES) return false;
+
+  // Placeholder - full implementation would need to track pending particles
+  // and incorporate them during Initialize()
+  return false;
+}
+
+bool DsphStepEngine::SetParticleFluidType(unsigned int particleIndex, unsigned int fluidTypeId) {
+  if(!Initialized) return false;
+  if(particleIndex >= Npf) return false;
+  if(fluidTypeId >= FluidTypeCount) return false;
+  if(!FluidTypes[fluidTypeId].active) return false;
+
+  // Update fluid type for this particle on GPU
+  unsigned char typeVal = (unsigned char)fluidTypeId;
+
+  // FluidTypeg array is for all particles, fluid particles start at Npb
+  cudaMemcpyAsync(FluidTypeg + Npb + particleIndex, &typeVal, sizeof(unsigned char),
+                  cudaMemcpyHostToDevice, Stream);
+
+  return true;
+}
+
+unsigned int DsphStepEngine::GetParticleFluidType(unsigned int particleIndex) {
+  if(!Initialized || particleIndex >= Npf) return 0;
+
+  unsigned char typeVal = 0;
+  cudaMemcpy(&typeVal, FluidTypeg + Npb + particleIndex, sizeof(unsigned char),
+             cudaMemcpyDeviceToHost);
+
+  return (unsigned int)typeVal;
 }
 
 #endif // _WITHGPU
