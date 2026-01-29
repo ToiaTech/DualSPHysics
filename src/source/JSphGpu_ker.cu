@@ -635,7 +635,7 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
       if(divclean && compute){
         float psicleanp2=psiclean[p2];
         if(boundp2)psicleanp2=psicleanp1;
-        float dvpsiclean=-(psicleanp1+psicleanp2)*massp2/(velrhop2.w);
+        float dvpsiclean=-(psicleanp1+psicleanp2)*(USE_FLOATING? ftmassp2: massp2_mf)/(velrhop2.w);
         acep1.x+=dvpsiclean*frx; acep1.y+=dvpsiclean*fry; acep1.z+=dvpsiclean*frz;
         psicleanr+=CTE.cs0*CTE.cs0*(USE_FLOATING? ftmassp2: massp2_mf)*(dvx*frx+dvy*fry+dvz*frz)/(velrhop2.w);
       }
@@ -680,7 +680,7 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
         const float rh=1.f+CTE.ddtgz*drz;
         const float drho=CTE.rhopzero*pow(rh,1.f/CTE.gamma)-CTE.rhopzero;  
         const float visc_densi=CTE.ddtkh*cbar*((velrhop2.w-velrhop1.w)-drho)/(rr2+CTE.eta2);
-        const float delta=visc_densi*dot3*massp2/velrhop2.w;
+        const float delta=visc_densi*dot3*(USE_FLOATING? ftmassp2: massp2_mf)/velrhop2.w;
         deltap1=(boundp2? FLT_MAX: deltap1-delta); //-blocks it makes it boil - bloody DBC
       }
 
@@ -919,7 +919,7 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
     }
 
     //<vs_advshift_ini>
-    pou+=cufsph::GetKernel_Wab<tker>(0.f)*CTE.massf/velrhop1.w;
+    pou+=cufsph::GetKernel_Wab<tker>(0.f)*massf1/velrhop1.w;
     if(ncpress){
       if(fstype[p1]==0 && pou>0.95f){
         if(simulate2d){
