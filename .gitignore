@@ -32,3 +32,9 @@ src/lib/vs2022/*.pdb
 src/lib/vs2022/LibDSphMoorDynPlus_*.*
 bin/windows/DualSPHysics*.exe
 bin/linux/DualSPHysics*_linux64
+
+## CMake build directories
+src/source/build/
+
+## Generated library files
+src/lib/linux_gcc/*.a
