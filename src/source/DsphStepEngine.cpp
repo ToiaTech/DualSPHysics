@@ -1420,6 +1420,18 @@ bool DsphStepEngine::SetParticleFluidType(unsigned int particleIndex, unsigned i
   return true;
 }
 
+bool DsphStepEngine::SetAllParticleFluidTypes(const unsigned char* fluidTypes, unsigned int count) {
+  if(!Initialized || !fluidTypes) return false;
+  if(count > Npf) count = Npf;
+  if(count == 0) return true;
+
+  // Upload all fluid types for fluid particles (starting at Npb offset)
+  cudaMemcpyAsync(FluidTypeg + Npb, fluidTypes, count * sizeof(unsigned char),
+                  cudaMemcpyHostToDevice, Stream);
+
+  return true;
+}
+
 unsigned int DsphStepEngine::GetParticleFluidType(unsigned int particleIndex) {
   if(!Initialized || particleIndex >= Npf) return 0;
 

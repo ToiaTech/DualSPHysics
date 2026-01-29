@@ -459,6 +459,9 @@ public:
   /// Set fluid type for a specific particle (by particle index within fluid particles).
   bool SetParticleFluidType(unsigned int particleIndex, unsigned int fluidTypeId);
 
+  /// Set fluid types for all fluid particles at once (bulk upload).
+  bool SetAllParticleFluidTypes(const unsigned char* fluidTypes, unsigned int count);
+
   /// Get fluid type for a specific particle.
   unsigned int GetParticleFluidType(unsigned int particleIndex);
 

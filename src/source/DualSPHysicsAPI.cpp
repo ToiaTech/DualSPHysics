@@ -120,6 +120,7 @@ struct DsphSimConfig {
 struct DsphParticleStorage {
   std::vector<double> fluidPositions;     // x,y,z,x,y,z,...
   std::vector<double> fluidVelocities;    // vx,vy,vz,...
+  std::vector<unsigned char> fluidTypes;  // Per-particle fluid type ID
   std::vector<double> boundaryPositions;  // x,y,z,...
   std::vector<double> boundaryNormals;    // nx,ny,nz,...
 
@@ -129,6 +130,7 @@ struct DsphParticleStorage {
   void Clear() {
     fluidPositions.clear();
     fluidVelocities.clear();
+    fluidTypes.clear();
     boundaryPositions.clear();
     boundaryNormals.clear();
   }
@@ -684,6 +686,10 @@ DUALSPH_CAPI int DsphAddFluidParticles(DsphSimHandle handle,
                   0, count * 3 * sizeof(double));
     }
 
+    // Store fluid type 0 for all particles added via this function
+    size_t typeOffset = handle->particles.fluidTypes.size();
+    handle->particles.fluidTypes.resize(typeOffset + count, 0);
+
     return DSPH_SUCCESS;
   }
   catch(const std::exception& e) {
@@ -963,6 +969,14 @@ DUALSPH_CAPI int DsphPrepare(DsphSimHandle handle) {
           handle->externalBuffer.cudaDevicePtr,
           handle->externalBuffer.maxParticles,
           handle->externalBuffer.writeFluidOnly
+        );
+      }
+
+      // Upload per-particle fluid types if any were set
+      if(!handle->particles.fluidTypes.empty()) {
+        handle->stepEngine->SetAllParticleFluidTypes(
+          handle->particles.fluidTypes.data(),
+          static_cast<unsigned int>(handle->particles.fluidTypes.size())
         );
       }
     }
@@ -1662,30 +1676,39 @@ DUALSPH_CAPI int DsphAddFluidParticlesTyped(
     SetError("Invalid parameters");
     return DSPH_ERROR_INVALID_PARAM;
   }
+  if(fluidType < 0 || fluidType >= DSPH_MAX_FLUID_TYPES) {
+    SetError("Invalid fluid type ID");
+    return DSPH_ERROR_INVALID_FLUID_TYPE;
+  }
 
   if(!handle->prepared) {
-    // Before preparation: only type 0 supported, store normally
-    if(fluidType != 0) {
-      SetError("Only fluid type 0 is supported before preparation");
-      return DSPH_ERROR_INVALID_FLUID_TYPE;
-    }
+    // Before preparation: store particles with their fluid type
+    try {
+      size_t offset = handle->particles.fluidPositions.size();
+      handle->particles.fluidPositions.resize(offset + count * 3);
+      handle->particles.fluidVelocities.resize(offset + count * 3);
 
-    // Convert to double and use existing function
-    std::vector<double> posDouble(count * 3);
-    std::vector<double> velDouble(count * 3);
-    for(unsigned int i = 0; i < count * 3; i++) {
-      posDouble[i] = static_cast<double>(positions[i]);
-      velDouble[i] = velocities ? static_cast<double>(velocities[i]) : 0.0;
-    }
+      for(unsigned int i = 0; i < count * 3; i++) {
+        handle->particles.fluidPositions[offset + i] = static_cast<double>(positions[i]);
+        handle->particles.fluidVelocities[offset + i] = velocities ? static_cast<double>(velocities[i]) : 0.0;
+      }
 
-    return DsphAddFluidParticles(handle, posDouble.data(),
-                                  velocities ? velDouble.data() : nullptr, count);
+      // Store fluid type for each particle
+      size_t typeOffset = handle->particles.fluidTypes.size();
+      handle->particles.fluidTypes.resize(typeOffset + count, static_cast<unsigned char>(fluidType));
+
+      return DSPH_SUCCESS;
+    }
+    catch(const std::exception& e) {
+      SetError(std::string("Failed to add typed fluid particles: ") + e.what());
+      return DSPH_ERROR_MEMORY;
+    }
   }
 
 #ifdef _WITHGPU
   if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
     // After preparation: validate fluid type
-    if(fluidType < 0 || (unsigned int)fluidType >= handle->stepEngine->GetFluidTypeCount()) {
+    if((unsigned int)fluidType >= handle->stepEngine->GetFluidTypeCount()) {
       SetError("Invalid fluid type ID");
       return DSPH_ERROR_INVALID_FLUID_TYPE;
     }

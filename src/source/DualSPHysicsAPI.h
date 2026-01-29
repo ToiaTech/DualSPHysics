@@ -61,6 +61,12 @@ extern "C" {
 #define DSPH_ERROR_SAMPLING_FAILED -19
 
 //==============================================================================
+// Limits
+//==============================================================================
+#define DSPH_MAX_FLUID_TYPES  16   // Maximum number of fluid types
+#define DSPH_MAX_BOUNDARIES   32   // Maximum number of dynamic boundaries
+
+//==============================================================================
 // Device Types
 //==============================================================================
 #define DSPH_DEVICE_CPU  0
