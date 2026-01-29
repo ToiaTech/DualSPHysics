@@ -906,6 +906,23 @@ void DsphStepEngine::GetDensities(float* outDensities, unsigned int count) {
   }
 }
 
+void DsphStepEngine::GetAccelerations(float* outAccelerations, unsigned int count) {
+  if(!Initialized || !outAccelerations || count == 0) return;
+  if(count > Npf) count = Npf;
+
+  // Copy accelerations from fluid particles (offset by Npb for boundary particles)
+  std::vector<float3> ace(count);
+  cudaMemcpyAsync(ace.data(), Aceg + Npb, count * sizeof(float3), cudaMemcpyDeviceToHost, Stream);
+  cudaStreamSynchronize(Stream);
+
+  // Convert float3 array to interleaved xyz
+  for(unsigned int i = 0; i < count; i++) {
+    outAccelerations[i * 3 + 0] = ace[i].x;
+    outAccelerations[i * 3 + 1] = ace[i].y;
+    outAccelerations[i * 3 + 2] = ace[i].z;
+  }
+}
+
 //==============================================================================
 // Reset / Shutdown
 //==============================================================================

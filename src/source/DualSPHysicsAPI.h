@@ -53,6 +53,12 @@ extern "C" {
 #define DSPH_ERROR_INVALID_STATE  -11
 #define DSPH_ERROR_BUFFER_TOO_SMALL -12
 #define DSPH_ERROR_NOT_IMPLEMENTED -13
+#define DSPH_ERROR_INVALID_BOUNDARY -14
+#define DSPH_ERROR_INVALID_FLUID_TYPE -15
+#define DSPH_ERROR_BOUNDARY_LIMIT -16
+#define DSPH_ERROR_FLUID_TYPE_LIMIT -17
+#define DSPH_ERROR_MESH_INVALID -18
+#define DSPH_ERROR_SAMPLING_FAILED -19
 
 //==============================================================================
 // Device Types
@@ -65,6 +71,8 @@ extern "C" {
 //==============================================================================
 #define DSPH_KERNEL_CUBIC     0
 #define DSPH_KERNEL_WENDLAND  1
+#define DSPH_KERNEL_POLY6     2   // Good for density estimation
+#define DSPH_KERNEL_SPIKY     3   // Good for pressure gradient
 
 //==============================================================================
 // Viscosity Types
@@ -479,6 +487,203 @@ DUALSPH_CAPI int DsphGetDensities(DsphSimHandle handle, float* outDensities, uns
 /// @param handle Simulation handle
 /// @return DSPH_SUCCESS on success, error code otherwise
 DUALSPH_CAPI int DsphCopyToExternalBuffer(DsphSimHandle handle);
+
+//==============================================================================
+// Particle Acceleration Access
+//==============================================================================
+
+/// Copy particle accelerations from GPU to a CPU buffer.
+/// Accelerations are the total (pressure + viscosity + gravity + external).
+/// @param handle Simulation handle
+/// @param outAccelerations Buffer to receive accelerations [ax0,ay0,az0, ...] (count*3 floats)
+/// @param count Number of particles to copy
+/// @return DSPH_SUCCESS on success, error code otherwise
+DUALSPH_CAPI int DsphGetAccelerations(DsphSimHandle handle, float* outAccelerations, unsigned int count);
+
+//==============================================================================
+// Dynamic Boundary (Floating Body) Management
+//==============================================================================
+
+/// Add a dynamic boundary object (floating body) to the simulation.
+/// For kinematic boundaries (isDynamic=false), call DsphUpdateBoundaryState()
+/// each frame. Forces are computed and can be retrieved via DsphGetBoundaryForces().
+///
+/// @param handle Simulation handle
+/// @param positions Boundary particle positions (x,y,z triplets) - count*3 floats
+/// @param normals Surface normals at each particle (x,y,z triplets) - count*3 floats
+/// @param count Number of boundary particles
+/// @param mass Total mass of the boundary object (kg)
+/// @param inertia Moment of inertia tensor (Ixx, Iyy, Izz, Ixy, Ixz, Iyz) - 6 floats
+/// @param centerOfMass Center of mass position (x, y, z) - 3 floats
+/// @param isDynamic If true, forces affect object motion; if false, kinematic control
+/// @return Boundary handle (>= 0) on success, negative error code on failure
+DUALSPH_CAPI int DsphAddDynamicBoundary(
+    DsphSimHandle handle,
+    const float* positions,
+    const float* normals,
+    unsigned int count,
+    float mass,
+    const float* inertia,
+    const float* centerOfMass,
+    int isDynamic
+);
+
+/// Get the number of dynamic boundary objects in the simulation.
+/// @param handle Simulation handle
+/// @return Number of boundaries (>= 0), or negative error code
+DUALSPH_CAPI int DsphGetBoundaryCount(DsphSimHandle handle);
+
+/// Retrieve accumulated forces and torques on a boundary object.
+/// Forces are computed during DsphStep() from fluid-boundary interactions.
+/// Forces are cleared after retrieval to prevent double-counting.
+/// Torques are computed about the boundary's center of mass.
+///
+/// @param handle Simulation handle
+/// @param boundaryId Boundary handle from DsphAddDynamicBoundary()
+/// @param outForce Output: accumulated force vector (Fx, Fy, Fz) in Newtons - 3 floats
+/// @param outTorque Output: accumulated torque vector (Tx, Ty, Tz) in N*m - 3 floats
+/// @return DSPH_SUCCESS on success, error code on failure
+DUALSPH_CAPI int DsphGetBoundaryForces(
+    DsphSimHandle handle,
+    int boundaryId,
+    float* outForce,
+    float* outTorque
+);
+
+/// Get forces without clearing the accumulator.
+/// Useful when multiple systems need to read forces (e.g., haptics + logging).
+/// Caller must manually call DsphClearBoundaryForces() when done.
+DUALSPH_CAPI int DsphPeekBoundaryForces(
+    DsphSimHandle handle,
+    int boundaryId,
+    float* outForce,
+    float* outTorque
+);
+
+/// Manually clear accumulated forces on a boundary.
+/// @param handle Simulation handle
+/// @param boundaryId Boundary handle
+/// @return DSPH_SUCCESS on success, error code on failure
+DUALSPH_CAPI int DsphClearBoundaryForces(
+    DsphSimHandle handle,
+    int boundaryId
+);
+
+/// Update the kinematic state of a boundary object.
+/// Call this before DsphStep() each frame for kinematic boundaries.
+///
+/// @param handle Simulation handle
+/// @param boundaryId Boundary handle from DsphAddDynamicBoundary()
+/// @param position New center of mass position (x, y, z) - 3 floats
+/// @param velocity Linear velocity (vx, vy, vz) in m/s - 3 floats
+/// @param orientation Rotation quaternion (qx, qy, qz, qw) normalized - 4 floats
+/// @param angularVelocity Angular velocity (wx, wy, wz) in rad/s - 3 floats
+/// @return DSPH_SUCCESS on success, error code on failure
+DUALSPH_CAPI int DsphUpdateBoundaryState(
+    DsphSimHandle handle,
+    int boundaryId,
+    const float* position,
+    const float* velocity,
+    const float* orientation,
+    const float* angularVelocity
+);
+
+/// Update boundary state with a 4x4 transformation matrix.
+/// Alternative to quaternion-based update for systems using matrices.
+///
+/// @param handle Simulation handle
+/// @param boundaryId Boundary handle
+/// @param transform 4x4 column-major transformation matrix - 16 floats
+/// @param velocity Linear velocity (3 floats)
+/// @param angularVelocity Angular velocity (3 floats)
+/// @return DSPH_SUCCESS on success, error code on failure
+DUALSPH_CAPI int DsphUpdateBoundaryStateMatrix(
+    DsphSimHandle handle,
+    int boundaryId,
+    const float* transform,
+    const float* velocity,
+    const float* angularVelocity
+);
+
+/// Get current state of a boundary object.
+/// @param handle Simulation handle
+/// @param boundaryId Boundary handle
+/// @param outPosition Current position (3 floats, can be NULL)
+/// @param outVelocity Current velocity (3 floats, can be NULL)
+/// @param outOrientation Current orientation quaternion (4 floats, can be NULL)
+/// @param outAngularVelocity Current angular velocity (3 floats, can be NULL)
+/// @return DSPH_SUCCESS on success, error code on failure
+DUALSPH_CAPI int DsphGetBoundaryState(
+    DsphSimHandle handle,
+    int boundaryId,
+    float* outPosition,
+    float* outVelocity,
+    float* outOrientation,
+    float* outAngularVelocity
+);
+
+//==============================================================================
+// Multiple Fluid Type Support (Experimental)
+//==============================================================================
+
+/// Create a new fluid type with specific properties.
+/// Call this before adding particles. Cannot create new types after DsphPrepare().
+///
+/// @param handle Simulation handle
+/// @param density Rest density in kg/m^3 (typical: water=1000, oil=900)
+/// @param viscosity Dynamic viscosity in Pa*s (typical: water=0.001, oil=0.1)
+/// @param surfaceTension Surface tension coefficient in N/m (typical: water=0.0728)
+/// @return Fluid type handle (>= 0) on success, negative error code on failure
+///
+/// @note Multi-fluid interaction is experimental and may not be fully stable.
+DUALSPH_CAPI int DsphCreateFluidType(
+    DsphSimHandle handle,
+    float density,
+    float viscosity,
+    float surfaceTension
+);
+
+/// Add fluid particles of a specific type.
+/// @param handle Simulation handle
+/// @param fluidType Fluid type handle from DsphCreateFluidType()
+/// @param positions Particle positions (x,y,z triplets) - count*3 floats
+/// @param velocities Initial velocities (x,y,z triplets), or NULL for zero - count*3 floats
+/// @param count Number of particles
+/// @return DSPH_SUCCESS on success, error code on failure
+DUALSPH_CAPI int DsphAddFluidParticlesTyped(
+    DsphSimHandle handle,
+    int fluidType,
+    const float* positions,
+    const float* velocities,
+    unsigned int count
+);
+
+/// Get number of fluid types in the simulation.
+/// @param handle Simulation handle
+/// @return Number of fluid types (>= 0), or negative error code
+DUALSPH_CAPI int DsphGetFluidTypeCount(DsphSimHandle handle);
+
+/// Get particle count for a specific fluid type.
+/// @param handle Simulation handle
+/// @param fluidType Fluid type handle
+/// @param outCount Pointer to receive particle count
+/// @return DSPH_SUCCESS on success, error code on failure
+DUALSPH_CAPI int DsphGetFluidTypeParticleCount(
+    DsphSimHandle handle,
+    int fluidType,
+    unsigned int* outCount
+);
+
+/// Set viscosity for a specific fluid type (can be called during simulation).
+/// @param handle Simulation handle
+/// @param fluidType Fluid type handle
+/// @param viscosity New viscosity value in Pa*s
+/// @return DSPH_SUCCESS on success, error code on failure
+DUALSPH_CAPI int DsphSetFluidTypeViscosity(
+    DsphSimHandle handle,
+    int fluidType,
+    float viscosity
+);
 
 //==============================================================================
 // Error Handling

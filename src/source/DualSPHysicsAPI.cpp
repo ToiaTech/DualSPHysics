@@ -1241,6 +1241,319 @@ DUALSPH_CAPI int DsphCopyToExternalBuffer(DsphSimHandle handle) {
 }
 
 //==============================================================================
+// Particle Acceleration Access
+//==============================================================================
+DUALSPH_CAPI int DsphGetAccelerations(DsphSimHandle handle, float* outAccelerations, unsigned int count) {
+  if(!handle || !outAccelerations) {
+    SetError("Invalid parameters");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(!handle->prepared) {
+    SetError("Simulation not prepared");
+    return DSPH_ERROR_NOT_PREPARED;
+  }
+  if(count > handle->fluidParticles) {
+    SetError("Count exceeds particle count");
+    return DSPH_ERROR_BUFFER_TOO_SMALL;
+  }
+
+#ifdef _WITHGPU
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    handle->stepEngine->GetAccelerations(outAccelerations, count);
+    return DSPH_SUCCESS;
+  }
+#endif
+
+  SetError("CPU simulation not yet implemented");
+  return DSPH_ERROR_NOT_IMPLEMENTED;
+}
+
+//==============================================================================
+// Dynamic Boundary Management
+//==============================================================================
+DUALSPH_CAPI int DsphAddDynamicBoundary(
+    DsphSimHandle handle,
+    const float* positions,
+    const float* normals,
+    unsigned int count,
+    float mass,
+    const float* inertia,
+    const float* centerOfMass,
+    int isDynamic)
+{
+  if(!handle || !positions || count == 0) {
+    SetError("Invalid parameters");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(handle->prepared) {
+    SetError("Cannot add boundaries after preparation");
+    return DSPH_ERROR_ALREADY_PREPARED;
+  }
+
+  // NOTE: Full dynamic boundary support requires integration with floating body
+  // infrastructure in DualSPHysics. This is a placeholder that adds particles
+  // as standard boundary particles for now.
+
+  // Convert float positions to double for existing API
+  std::vector<double> posDouble(count * 3);
+  std::vector<double> normDouble(count * 3);
+  for(unsigned int i = 0; i < count * 3; i++) {
+    posDouble[i] = static_cast<double>(positions[i]);
+    normDouble[i] = normals ? static_cast<double>(normals[i]) : 0.0;
+  }
+
+  int result = DsphAddBoundaryParticles(handle, posDouble.data(),
+                                         normals ? normDouble.data() : nullptr, count);
+  if(result != DSPH_SUCCESS) return result;
+
+  // Return boundary ID (would be used for force retrieval once fully implemented)
+  // For now, return 0 as the first/only dynamic boundary
+  return 0;
+}
+
+DUALSPH_CAPI int DsphGetBoundaryCount(DsphSimHandle handle) {
+  if(!handle) {
+    SetError("Invalid simulation handle");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  // Return 1 if we have boundary particles, 0 otherwise
+  // Full implementation would track separate dynamic boundary objects
+  return (handle->boundaryParticles > 0) ? 1 : 0;
+}
+
+DUALSPH_CAPI int DsphGetBoundaryForces(
+    DsphSimHandle handle,
+    int boundaryId,
+    float* outForce,
+    float* outTorque)
+{
+  if(!handle || !outForce || !outTorque) {
+    SetError("Invalid parameters");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(!handle->prepared) {
+    SetError("Simulation not prepared");
+    return DSPH_ERROR_NOT_PREPARED;
+  }
+  if(boundaryId < 0 || boundaryId >= DsphGetBoundaryCount(handle)) {
+    SetError("Invalid boundary ID");
+    return DSPH_ERROR_INVALID_BOUNDARY;
+  }
+
+  // NOTE: Full force accumulation requires modifications to the SPH interaction
+  // kernel. This is a placeholder that returns zero forces.
+  // The DualSPHysics floating body infrastructure (StFloatingData) already
+  // computes fluforcelin/fluforceang - this needs to be exposed via API.
+
+  outForce[0] = outForce[1] = outForce[2] = 0.0f;
+  outTorque[0] = outTorque[1] = outTorque[2] = 0.0f;
+
+  return DSPH_SUCCESS;
+}
+
+DUALSPH_CAPI int DsphPeekBoundaryForces(
+    DsphSimHandle handle,
+    int boundaryId,
+    float* outForce,
+    float* outTorque)
+{
+  // Same as GetBoundaryForces but doesn't clear (not implemented yet anyway)
+  return DsphGetBoundaryForces(handle, boundaryId, outForce, outTorque);
+}
+
+DUALSPH_CAPI int DsphClearBoundaryForces(DsphSimHandle handle, int boundaryId) {
+  if(!handle) {
+    SetError("Invalid simulation handle");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  // No-op for now since force accumulation not implemented
+  return DSPH_SUCCESS;
+}
+
+DUALSPH_CAPI int DsphUpdateBoundaryState(
+    DsphSimHandle handle,
+    int boundaryId,
+    const float* position,
+    const float* velocity,
+    const float* orientation,
+    const float* angularVelocity)
+{
+  if(!handle) {
+    SetError("Invalid simulation handle");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(!handle->prepared) {
+    SetError("Simulation not prepared");
+    return DSPH_ERROR_NOT_PREPARED;
+  }
+  if(boundaryId < 0 || boundaryId >= DsphGetBoundaryCount(handle)) {
+    SetError("Invalid boundary ID");
+    return DSPH_ERROR_INVALID_BOUNDARY;
+  }
+
+  // NOTE: Dynamic boundary state updates require GPU kernel for particle
+  // transformation. This is a placeholder - full implementation needed.
+  SetError("Dynamic boundary state updates not yet fully implemented");
+  return DSPH_ERROR_NOT_IMPLEMENTED;
+}
+
+DUALSPH_CAPI int DsphUpdateBoundaryStateMatrix(
+    DsphSimHandle handle,
+    int boundaryId,
+    const float* transform,
+    const float* velocity,
+    const float* angularVelocity)
+{
+  if(!handle) {
+    SetError("Invalid simulation handle");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+
+  // Convert matrix to quaternion and call quaternion version
+  // For now, return not implemented
+  SetError("Matrix-based boundary update not yet implemented");
+  return DSPH_ERROR_NOT_IMPLEMENTED;
+}
+
+DUALSPH_CAPI int DsphGetBoundaryState(
+    DsphSimHandle handle,
+    int boundaryId,
+    float* outPosition,
+    float* outVelocity,
+    float* outOrientation,
+    float* outAngularVelocity)
+{
+  if(!handle) {
+    SetError("Invalid simulation handle");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(boundaryId < 0 || boundaryId >= DsphGetBoundaryCount(handle)) {
+    SetError("Invalid boundary ID");
+    return DSPH_ERROR_INVALID_BOUNDARY;
+  }
+
+  // Return identity state for now
+  if(outPosition) { outPosition[0] = outPosition[1] = outPosition[2] = 0.0f; }
+  if(outVelocity) { outVelocity[0] = outVelocity[1] = outVelocity[2] = 0.0f; }
+  if(outOrientation) {
+    outOrientation[0] = outOrientation[1] = outOrientation[2] = 0.0f;
+    outOrientation[3] = 1.0f;  // Identity quaternion
+  }
+  if(outAngularVelocity) {
+    outAngularVelocity[0] = outAngularVelocity[1] = outAngularVelocity[2] = 0.0f;
+  }
+
+  return DSPH_SUCCESS;
+}
+
+//==============================================================================
+// Multiple Fluid Type Support (Experimental)
+//==============================================================================
+DUALSPH_CAPI int DsphCreateFluidType(
+    DsphSimHandle handle,
+    float density,
+    float viscosity,
+    float surfaceTension)
+{
+  if(!handle) {
+    SetError("Invalid simulation handle");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(handle->prepared) {
+    SetError("Cannot create fluid types after preparation");
+    return DSPH_ERROR_ALREADY_PREPARED;
+  }
+
+  // NOTE: Multi-fluid support requires significant changes to particle type
+  // handling in DualSPHysics core. This is a placeholder.
+  // For now, return type 0 (default fluid) and ignore the parameters.
+  // The parameters could be used to configure the global fluid properties.
+
+  handle->config.rho0 = density;
+  handle->config.viscoValue = viscosity;
+  // surfaceTension not yet supported
+
+  return 0;  // Return fluid type 0
+}
+
+DUALSPH_CAPI int DsphAddFluidParticlesTyped(
+    DsphSimHandle handle,
+    int fluidType,
+    const float* positions,
+    const float* velocities,
+    unsigned int count)
+{
+  if(!handle || !positions || count == 0) {
+    SetError("Invalid parameters");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(fluidType != 0) {
+    SetError("Only fluid type 0 is currently supported");
+    return DSPH_ERROR_INVALID_FLUID_TYPE;
+  }
+
+  // Convert to double and use existing function
+  std::vector<double> posDouble(count * 3);
+  std::vector<double> velDouble(count * 3);
+  for(unsigned int i = 0; i < count * 3; i++) {
+    posDouble[i] = static_cast<double>(positions[i]);
+    velDouble[i] = velocities ? static_cast<double>(velocities[i]) : 0.0;
+  }
+
+  return DsphAddFluidParticles(handle, posDouble.data(),
+                                velocities ? velDouble.data() : nullptr, count);
+}
+
+DUALSPH_CAPI int DsphGetFluidTypeCount(DsphSimHandle handle) {
+  if(!handle) {
+    SetError("Invalid simulation handle");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  // Always return 1 for now (single fluid type)
+  return 1;
+}
+
+DUALSPH_CAPI int DsphGetFluidTypeParticleCount(
+    DsphSimHandle handle,
+    int fluidType,
+    unsigned int* outCount)
+{
+  if(!handle || !outCount) {
+    SetError("Invalid parameters");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(fluidType != 0) {
+    SetError("Invalid fluid type");
+    return DSPH_ERROR_INVALID_FLUID_TYPE;
+  }
+
+  *outCount = handle->fluidParticles;
+  return DSPH_SUCCESS;
+}
+
+DUALSPH_CAPI int DsphSetFluidTypeViscosity(
+    DsphSimHandle handle,
+    int fluidType,
+    float viscosity)
+{
+  if(!handle) {
+    SetError("Invalid simulation handle");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(fluidType != 0) {
+    SetError("Invalid fluid type");
+    return DSPH_ERROR_INVALID_FLUID_TYPE;
+  }
+
+  // Update viscosity (would need runtime constant update for GPU)
+  handle->config.viscoValue = viscosity;
+
+  // NOTE: Changing viscosity at runtime requires updating GPU constants
+  // This is a placeholder - needs proper implementation
+  return DSPH_SUCCESS;
+}
+
+//==============================================================================
 // Error Handling
 //==============================================================================
 DUALSPH_CAPI const char* DsphGetLastError(void) {

@@ -285,6 +285,12 @@ public:
   /// Copy densities from GPU to CPU buffer.
   void GetDensities(float* outDensities, unsigned int count);
 
+  /// Copy accelerations from GPU to CPU buffer (interleaved xyz).
+  void GetAccelerations(float* outAccelerations, unsigned int count);
+
+  /// Get raw GPU pointer to acceleration array (for advanced use).
+  float3* GetAccelerationPtr() const { return Aceg; }
+
   /// Reset simulation to initial state.
   void Reset();
 
