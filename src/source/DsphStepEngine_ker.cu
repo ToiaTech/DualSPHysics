@@ -337,4 +337,255 @@ void SimpleSymplecticCor(
   }
 }
 
+//==============================================================================
+// Dynamic Boundary Transformation Kernels
+//==============================================================================
+
+//------------------------------------------------------------------------------
+/// Device function: Rotate vector by quaternion.
+/// q = (x,y,z,w) where w is the scalar component.
+/// Formula: v' = v + 2*w*(qv x v) + 2*(qv x (qv x v))
+/// where qv = (x,y,z)
+//------------------------------------------------------------------------------
+__device__ float3 QuatRotate(float4 q, float3 v) {
+  // Extract quaternion vector part
+  float3 qv = make_float3(q.x, q.y, q.z);
+  float qw = q.w;
+
+  // Cross product: qv x v
+  float3 t;
+  t.x = qv.y * v.z - qv.z * v.y;
+  t.y = qv.z * v.x - qv.x * v.z;
+  t.z = qv.x * v.y - qv.y * v.x;
+
+  // t = 2 * t
+  t.x *= 2.0f;
+  t.y *= 2.0f;
+  t.z *= 2.0f;
+
+  // Cross product: qv x t
+  float3 t2;
+  t2.x = qv.y * t.z - qv.z * t.y;
+  t2.y = qv.z * t.x - qv.x * t.z;
+  t2.z = qv.x * t.y - qv.y * t.x;
+
+  // Result: v + w*t + t2
+  float3 result;
+  result.x = v.x + qw * t.x + t2.x;
+  result.y = v.y + qw * t.y + t2.y;
+  result.z = v.z + qw * t.z + t2.z;
+
+  return result;
+}
+
+//------------------------------------------------------------------------------
+/// Device function: Cross product of two float3 vectors.
+//------------------------------------------------------------------------------
+__device__ float3 Cross(float3 a, float3 b) {
+  return make_float3(
+    a.y * b.z - a.z * b.y,
+    a.z * b.x - a.x * b.z,
+    a.x * b.y - a.y * b.x
+  );
+}
+
+//------------------------------------------------------------------------------
+/// CUDA kernel: Transform boundary particles from local to world coordinates.
+//------------------------------------------------------------------------------
+__global__ void KerTransformBoundaryParticles(
+  unsigned int count,
+  const float3* localPos,
+  const float3* localNorm,
+  float3 comPosition,
+  float4 orientation,
+  float3 linearVel,
+  float3 angularVel,
+  float3* worldPos,
+  float3* worldNorm,
+  float3* particleVel)
+{
+  const unsigned int p = blockIdx.x * blockDim.x + threadIdx.x;
+  if(p >= count) return;
+
+  // Read local position
+  float3 lpos = localPos[p];
+
+  // Rotate local position by orientation quaternion
+  float3 rotatedPos = QuatRotate(orientation, lpos);
+
+  // Translate to world coordinates
+  float3 wpos;
+  wpos.x = rotatedPos.x + comPosition.x;
+  wpos.y = rotatedPos.y + comPosition.y;
+  wpos.z = rotatedPos.z + comPosition.z;
+  worldPos[p] = wpos;
+
+  // Transform normal if provided
+  if(localNorm && worldNorm) {
+    float3 lnorm = localNorm[p];
+    worldNorm[p] = QuatRotate(orientation, lnorm);
+  }
+
+  // Compute particle velocity: v = v_linear + omega x r
+  // where r is the rotated position (relative to CoM)
+  float3 vel = Cross(angularVel, rotatedPos);
+  vel.x += linearVel.x;
+  vel.y += linearVel.y;
+  vel.z += linearVel.z;
+  particleVel[p] = vel;
+}
+
+//------------------------------------------------------------------------------
+/// Transform boundary particles from local to world coordinates.
+//------------------------------------------------------------------------------
+void TransformBoundaryParticles(
+  unsigned int count,
+  const float3* localPos,
+  const float3* localNorm,
+  float3 comPosition,
+  float4 orientation,
+  float3 linearVel,
+  float3 angularVel,
+  float3* worldPos,
+  float3* worldNorm,
+  float3* particleVel,
+  cudaStream_t stm)
+{
+  if(count > 0) {
+    dim3 sgrid = GetGridSize(count, BSIZE);
+    KerTransformBoundaryParticles<<<sgrid, BSIZE, 0, stm>>>(
+      count, localPos, localNorm, comPosition, orientation,
+      linearVel, angularVel, worldPos, worldNorm, particleVel);
+  }
+}
+
+//------------------------------------------------------------------------------
+/// CUDA kernel: Accumulate forces on boundary particles.
+/// Uses parallel reduction to sum forces and torques.
+//------------------------------------------------------------------------------
+__global__ void KerAccumulateBoundaryForces(
+  unsigned int particleCount,
+  const float3* worldPos,
+  float3 comPosition,
+  const float3* ace,
+  float particleMass,
+  float3* outForce,
+  float3* outTorque)
+{
+  // Shared memory for reduction
+  __shared__ float sfx[BSIZE];
+  __shared__ float sfy[BSIZE];
+  __shared__ float sfz[BSIZE];
+  __shared__ float stx[BSIZE];
+  __shared__ float sty[BSIZE];
+  __shared__ float stz[BSIZE];
+
+  const unsigned int tid = threadIdx.x;
+  const unsigned int p = blockIdx.x * blockDim.x + threadIdx.x;
+
+  // Initialize with zero
+  float fx = 0, fy = 0, fz = 0;
+  float tx = 0, ty = 0, tz = 0;
+
+  if(p < particleCount) {
+    // Force = mass * acceleration (from fluid on boundary)
+    // Note: The acceleration in Aceg for boundary particles represents
+    // the force exerted BY the fluid ON the boundary.
+    // For the reaction force (boundary on fluid), we'd negate this.
+    float3 a = ace[p];
+    fx = particleMass * a.x;
+    fy = particleMass * a.y;
+    fz = particleMass * a.z;
+
+    // Torque = r x F, where r is from CoM to particle
+    float3 wpos = worldPos[p];
+    float3 r;
+    r.x = wpos.x - comPosition.x;
+    r.y = wpos.y - comPosition.y;
+    r.z = wpos.z - comPosition.z;
+
+    float3 torque = Cross(r, make_float3(fx, fy, fz));
+    tx = torque.x;
+    ty = torque.y;
+    tz = torque.z;
+  }
+
+  // Store to shared memory
+  sfx[tid] = fx;
+  sfy[tid] = fy;
+  sfz[tid] = fz;
+  stx[tid] = tx;
+  sty[tid] = ty;
+  stz[tid] = tz;
+  __syncthreads();
+
+  // Parallel reduction
+  for(unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if(tid < s) {
+      sfx[tid] += sfx[tid + s];
+      sfy[tid] += sfy[tid + s];
+      sfz[tid] += sfz[tid + s];
+      stx[tid] += stx[tid + s];
+      sty[tid] += sty[tid + s];
+      stz[tid] += stz[tid + s];
+    }
+    __syncthreads();
+  }
+
+  // First thread of each block writes partial result
+  if(tid == 0) {
+    atomicAdd(&outForce->x, sfx[0]);
+    atomicAdd(&outForce->y, sfy[0]);
+    atomicAdd(&outForce->z, sfz[0]);
+    atomicAdd(&outTorque->x, stx[0]);
+    atomicAdd(&outTorque->y, sty[0]);
+    atomicAdd(&outTorque->z, stz[0]);
+  }
+}
+
+//------------------------------------------------------------------------------
+/// Accumulate fluid forces acting on a boundary object.
+//------------------------------------------------------------------------------
+void AccumulateBoundaryForces(
+  unsigned int particleStart,
+  unsigned int particleCount,
+  const float3* worldPos,
+  float3 comPosition,
+  const float3* ace,
+  float particleMass,
+  float3* outForce,
+  float3* outTorque,
+  cudaStream_t stm)
+{
+  if(particleCount > 0) {
+    dim3 sgrid = GetGridSize(particleCount, BSIZE);
+    KerAccumulateBoundaryForces<<<sgrid, BSIZE, 0, stm>>>(
+      particleCount,
+      worldPos + particleStart,
+      comPosition,
+      ace + particleStart,
+      particleMass,
+      outForce,
+      outTorque);
+  }
+}
+
+//------------------------------------------------------------------------------
+/// CUDA kernel: Zero a float3 value.
+//------------------------------------------------------------------------------
+__global__ void KerZeroFloat3(float3* ptr) {
+  ptr->x = 0.0f;
+  ptr->y = 0.0f;
+  ptr->z = 0.0f;
+}
+
+//------------------------------------------------------------------------------
+/// Zero a float3 value on device.
+//------------------------------------------------------------------------------
+void ZeroFloat3(float3* ptr, cudaStream_t stm) {
+  if(ptr) {
+    KerZeroFloat3<<<1, 1, 0, stm>>>(ptr);
+  }
+}
+
 } // namespace dsphker

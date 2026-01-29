@@ -112,6 +112,49 @@ struct StDsphEngineConfig {
 };
 
 //==============================================================================
+/// Dynamic boundary object data
+//==============================================================================
+#define DSPH_MAX_BOUNDARIES 16
+
+struct StDsphBoundaryObject {
+  // Particle range within global boundary arrays
+  unsigned int particleStart;   // First particle index
+  unsigned int particleCount;   // Number of particles
+
+  // Physical properties
+  float mass;                   // Total mass (kg)
+  float inertia[6];             // Inertia tensor (Ixx,Iyy,Izz,Ixy,Ixz,Iyz)
+
+  // Current state
+  float3 position;              // Center of mass position
+  float3 velocity;              // Linear velocity (m/s)
+  float4 orientation;           // Rotation quaternion (x,y,z,w)
+  float3 angularVelocity;       // Angular velocity (rad/s)
+
+  // Accumulated forces (computed during SPH step)
+  float3 accumulatedForce;      // Force in Newtons
+  float3 accumulatedTorque;     // Torque in N*m
+
+  // Flags
+  bool isDynamic;               // If true, forces affect motion
+  bool isActive;                // Is this boundary slot in use
+
+  StDsphBoundaryObject() {
+    particleStart = particleCount = 0;
+    mass = 1.0f;
+    for(int i = 0; i < 6; i++) inertia[i] = 1.0f;
+    position = make_float3(0, 0, 0);
+    velocity = make_float3(0, 0, 0);
+    orientation = make_float4(0, 0, 0, 1);  // Identity quaternion
+    angularVelocity = make_float3(0, 0, 0);
+    accumulatedForce = make_float3(0, 0, 0);
+    accumulatedTorque = make_float3(0, 0, 0);
+    isDynamic = false;
+    isActive = false;
+  }
+};
+
+//==============================================================================
 /// External buffer configuration
 //==============================================================================
 struct StDsphExternalBuffer {
@@ -200,6 +243,17 @@ private:
   float ViscDtMax;              // Maximum viscous dt
   float AceMax;                 // Maximum acceleration
 
+  // Dynamic boundary objects
+  StDsphBoundaryObject BoundaryObjects[DSPH_MAX_BOUNDARIES];
+  unsigned int BoundaryCount;   // Number of active boundaries
+
+  // GPU arrays for dynamic boundaries (local coordinates relative to CoM)
+  float3* BoundLocalPosg;       // Local positions (relative to center of mass)
+  float3* BoundLocalNormg;      // Local normals
+  float3* BoundWorldPosg;       // Transformed world positions
+  float3* BoundWorldNormg;      // Transformed world normals
+  float3* BoundVelg;            // Boundary particle velocities
+
   // Private methods
   void AllocateGpuMemory(unsigned int np);
   void FreeGpuMemory();
@@ -226,6 +280,10 @@ private:
 
   // External buffer
   void CopyToExternalBufferInternal();
+
+  // Boundary object methods
+  void TransformBoundaryParticles(unsigned int boundaryId);
+  void AccumulateBoundaryForces();
 
 public:
   DsphStepEngine();
@@ -290,6 +348,53 @@ public:
 
   /// Get raw GPU pointer to acceleration array (for advanced use).
   float3* GetAccelerationPtr() const { return Aceg; }
+
+  //============================================================================
+  // Dynamic Boundary Object Methods
+  //============================================================================
+
+  /// Add a dynamic boundary object. Returns boundary ID or -1 on failure.
+  int AddBoundaryObject(
+      const float* localPositions,    // Particle positions relative to CoM
+      const float* localNormals,      // Surface normals
+      unsigned int particleCount,
+      float mass,
+      const float* inertia,           // 6 floats: Ixx,Iyy,Izz,Ixy,Ixz,Iyz
+      const float* centerOfMass,      // Initial CoM position
+      bool isDynamic
+  );
+
+  /// Get number of boundary objects.
+  unsigned int GetBoundaryCount() const { return BoundaryCount; }
+
+  /// Update boundary state (for kinematic boundaries).
+  bool UpdateBoundaryState(
+      unsigned int boundaryId,
+      const float* position,          // 3 floats
+      const float* velocity,          // 3 floats
+      const float* orientation,       // 4 floats (quaternion x,y,z,w)
+      const float* angularVelocity    // 3 floats
+  );
+
+  /// Get accumulated forces on boundary.
+  bool GetBoundaryForces(
+      unsigned int boundaryId,
+      float* outForce,                // 3 floats
+      float* outTorque,               // 3 floats
+      bool clearAfterRead = true
+  );
+
+  /// Clear accumulated forces on boundary.
+  void ClearBoundaryForces(unsigned int boundaryId);
+
+  /// Get current boundary state.
+  bool GetBoundaryState(
+      unsigned int boundaryId,
+      float* outPosition,
+      float* outVelocity,
+      float* outOrientation,
+      float* outAngularVelocity
+  );
 
   /// Reset simulation to initial state.
   void Reset();

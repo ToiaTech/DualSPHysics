@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <cstring>
+#include <vector>
 
 //==============================================================================
 // Constructor / Destructor
@@ -58,6 +59,10 @@ DsphStepEngine::DsphStepEngine()
   , AuxMemg(nullptr), AuxMemSize(0)
   , TimeStep(0), StepCount(0), LastDt(0), VerletStep(0)
   , ViscDtMax(0), AceMax(0)
+  , BoundaryCount(0)
+  , BoundLocalPosg(nullptr), BoundLocalNormg(nullptr)
+  , BoundWorldPosg(nullptr), BoundWorldNormg(nullptr)
+  , BoundVelg(nullptr)
 {
   MapPosMin = MapPosMax = TDouble3(0);
   MapRealPosMin = TDouble3(0);
@@ -143,6 +148,13 @@ void DsphStepEngine::FreeGpuMemory() {
   if(VelrhoPreg) { cudaFree(VelrhoPreg); VelrhoPreg = nullptr; }
   if(VelrhoM1g) { cudaFree(VelrhoM1g); VelrhoM1g = nullptr; }
   if(AuxMemg) { cudaFree(AuxMemg); AuxMemg = nullptr; }
+
+  // Free boundary arrays
+  if(BoundLocalPosg) { cudaFree(BoundLocalPosg); BoundLocalPosg = nullptr; }
+  if(BoundLocalNormg) { cudaFree(BoundLocalNormg); BoundLocalNormg = nullptr; }
+  if(BoundWorldPosg) { cudaFree(BoundWorldPosg); BoundWorldPosg = nullptr; }
+  if(BoundWorldNormg) { cudaFree(BoundWorldNormg); BoundWorldNormg = nullptr; }
+  if(BoundVelg) { cudaFree(BoundVelg); BoundVelg = nullptr; }
 
   if(CellDivSingle) { delete CellDivSingle; CellDivSingle = nullptr; }
 }
@@ -949,6 +961,283 @@ void DsphStepEngine::Shutdown() {
   TimeStep = 0.0;
   StepCount = 0;
   DivData = DivDataGpuNull();
+  BoundaryCount = 0;
+}
+
+//==============================================================================
+// Dynamic Boundary Object Methods
+//==============================================================================
+
+int DsphStepEngine::AddBoundaryObject(
+    const float* localPositions,
+    const float* localNormals,
+    unsigned int particleCount,
+    float mass,
+    const float* inertia,
+    const float* centerOfMass,
+    bool isDynamic)
+{
+  if(!Initialized) return -1;
+  if(BoundaryCount >= DSPH_MAX_BOUNDARIES) return -1;
+  if(particleCount == 0 || !localPositions || !centerOfMass) return -1;
+
+  unsigned int boundaryId = BoundaryCount;
+
+  // Calculate total boundary particles needed (sum of all boundary objects + new one)
+  unsigned int totalBoundParticles = particleCount;
+  for(unsigned int i = 0; i < BoundaryCount; i++) {
+    totalBoundParticles += BoundaryObjects[i].particleCount;
+  }
+
+  // Determine particle start index
+  unsigned int particleStart = 0;
+  for(unsigned int i = 0; i < BoundaryCount; i++) {
+    particleStart += BoundaryObjects[i].particleCount;
+  }
+
+  // Reallocate boundary arrays if needed
+  float3* newLocalPos = nullptr;
+  float3* newLocalNorm = nullptr;
+  float3* newWorldPos = nullptr;
+  float3* newWorldNorm = nullptr;
+  float3* newVel = nullptr;
+
+  cudaMalloc(&newLocalPos, totalBoundParticles * sizeof(float3));
+  cudaMalloc(&newLocalNorm, totalBoundParticles * sizeof(float3));
+  cudaMalloc(&newWorldPos, totalBoundParticles * sizeof(float3));
+  cudaMalloc(&newWorldNorm, totalBoundParticles * sizeof(float3));
+  cudaMalloc(&newVel, totalBoundParticles * sizeof(float3));
+
+  cudaError_t err = cudaGetLastError();
+  if(err != cudaSuccess) {
+    if(newLocalPos) cudaFree(newLocalPos);
+    if(newLocalNorm) cudaFree(newLocalNorm);
+    if(newWorldPos) cudaFree(newWorldPos);
+    if(newWorldNorm) cudaFree(newWorldNorm);
+    if(newVel) cudaFree(newVel);
+    return -1;
+  }
+
+  // Copy existing data if any
+  if(BoundLocalPosg && particleStart > 0) {
+    cudaMemcpyAsync(newLocalPos, BoundLocalPosg, particleStart * sizeof(float3), cudaMemcpyDeviceToDevice, Stream);
+    cudaMemcpyAsync(newLocalNorm, BoundLocalNormg, particleStart * sizeof(float3), cudaMemcpyDeviceToDevice, Stream);
+    cudaMemcpyAsync(newWorldPos, BoundWorldPosg, particleStart * sizeof(float3), cudaMemcpyDeviceToDevice, Stream);
+    cudaMemcpyAsync(newWorldNorm, BoundWorldNormg, particleStart * sizeof(float3), cudaMemcpyDeviceToDevice, Stream);
+    cudaMemcpyAsync(newVel, BoundVelg, particleStart * sizeof(float3), cudaMemcpyDeviceToDevice, Stream);
+  }
+
+  // Convert and upload new boundary particle data
+  std::vector<float3> localPosData(particleCount);
+  std::vector<float3> localNormData(particleCount);
+
+  for(unsigned int i = 0; i < particleCount; i++) {
+    localPosData[i] = make_float3(
+      localPositions[i * 3 + 0],
+      localPositions[i * 3 + 1],
+      localPositions[i * 3 + 2]
+    );
+
+    if(localNormals) {
+      localNormData[i] = make_float3(
+        localNormals[i * 3 + 0],
+        localNormals[i * 3 + 1],
+        localNormals[i * 3 + 2]
+      );
+    } else {
+      localNormData[i] = make_float3(0, 0, 1);  // Default normal
+    }
+  }
+
+  cudaMemcpyAsync(newLocalPos + particleStart, localPosData.data(),
+                  particleCount * sizeof(float3), cudaMemcpyHostToDevice, Stream);
+  cudaMemcpyAsync(newLocalNorm + particleStart, localNormData.data(),
+                  particleCount * sizeof(float3), cudaMemcpyHostToDevice, Stream);
+
+  // Free old arrays and assign new ones
+  if(BoundLocalPosg) cudaFree(BoundLocalPosg);
+  if(BoundLocalNormg) cudaFree(BoundLocalNormg);
+  if(BoundWorldPosg) cudaFree(BoundWorldPosg);
+  if(BoundWorldNormg) cudaFree(BoundWorldNormg);
+  if(BoundVelg) cudaFree(BoundVelg);
+
+  BoundLocalPosg = newLocalPos;
+  BoundLocalNormg = newLocalNorm;
+  BoundWorldPosg = newWorldPos;
+  BoundWorldNormg = newWorldNorm;
+  BoundVelg = newVel;
+
+  // Initialize boundary object data
+  StDsphBoundaryObject& obj = BoundaryObjects[boundaryId];
+  obj.particleStart = particleStart;
+  obj.particleCount = particleCount;
+  obj.mass = mass;
+  if(inertia) {
+    for(int i = 0; i < 6; i++) obj.inertia[i] = inertia[i];
+  }
+  obj.position = make_float3(centerOfMass[0], centerOfMass[1], centerOfMass[2]);
+  obj.velocity = make_float3(0, 0, 0);
+  obj.orientation = make_float4(0, 0, 0, 1);  // Identity quaternion
+  obj.angularVelocity = make_float3(0, 0, 0);
+  obj.accumulatedForce = make_float3(0, 0, 0);
+  obj.accumulatedTorque = make_float3(0, 0, 0);
+  obj.isDynamic = isDynamic;
+  obj.isActive = true;
+
+  BoundaryCount++;
+
+  // Transform particles to initial world positions
+  TransformBoundaryParticles(boundaryId);
+
+  cudaStreamSynchronize(Stream);
+
+  return (int)boundaryId;
+}
+
+void DsphStepEngine::TransformBoundaryParticles(unsigned int boundaryId) {
+  if(boundaryId >= BoundaryCount) return;
+
+  const StDsphBoundaryObject& obj = BoundaryObjects[boundaryId];
+  if(!obj.isActive) return;
+
+  dsphker::TransformBoundaryParticles(
+    obj.particleCount,
+    BoundLocalPosg + obj.particleStart,
+    BoundLocalNormg + obj.particleStart,
+    obj.position,
+    obj.orientation,
+    obj.velocity,
+    obj.angularVelocity,
+    BoundWorldPosg + obj.particleStart,
+    BoundWorldNormg + obj.particleStart,
+    BoundVelg + obj.particleStart,
+    Stream
+  );
+}
+
+void DsphStepEngine::AccumulateBoundaryForces() {
+  // Note: This is a placeholder for now. In a full implementation,
+  // we would extract forces from the SPH interaction that acts on
+  // boundary particles. DualSPHysics computes these forces during
+  // Interaction_Forces for floating bodies using StFloatingData.
+  //
+  // For now, forces remain at zero. The full implementation would
+  // require integrating with the floating body force computation
+  // or adding separate force accumulation during SPH interaction.
+
+  for(unsigned int i = 0; i < BoundaryCount; i++) {
+    if(!BoundaryObjects[i].isActive || !BoundaryObjects[i].isDynamic) continue;
+
+    // In future: accumulate forces from SPH interaction
+    // This would require modifying Interaction_Forces to track
+    // forces on these boundary particles separately.
+  }
+}
+
+bool DsphStepEngine::UpdateBoundaryState(
+    unsigned int boundaryId,
+    const float* position,
+    const float* velocity,
+    const float* orientation,
+    const float* angularVelocity)
+{
+  if(boundaryId >= BoundaryCount) return false;
+
+  StDsphBoundaryObject& obj = BoundaryObjects[boundaryId];
+  if(!obj.isActive) return false;
+
+  if(position) {
+    obj.position = make_float3(position[0], position[1], position[2]);
+  }
+  if(velocity) {
+    obj.velocity = make_float3(velocity[0], velocity[1], velocity[2]);
+  }
+  if(orientation) {
+    obj.orientation = make_float4(orientation[0], orientation[1], orientation[2], orientation[3]);
+  }
+  if(angularVelocity) {
+    obj.angularVelocity = make_float3(angularVelocity[0], angularVelocity[1], angularVelocity[2]);
+  }
+
+  // Re-transform particles to new world positions
+  TransformBoundaryParticles(boundaryId);
+
+  return true;
+}
+
+bool DsphStepEngine::GetBoundaryForces(
+    unsigned int boundaryId,
+    float* outForce,
+    float* outTorque,
+    bool clearAfterRead)
+{
+  if(boundaryId >= BoundaryCount) return false;
+
+  StDsphBoundaryObject& obj = BoundaryObjects[boundaryId];
+  if(!obj.isActive) return false;
+
+  if(outForce) {
+    outForce[0] = obj.accumulatedForce.x;
+    outForce[1] = obj.accumulatedForce.y;
+    outForce[2] = obj.accumulatedForce.z;
+  }
+  if(outTorque) {
+    outTorque[0] = obj.accumulatedTorque.x;
+    outTorque[1] = obj.accumulatedTorque.y;
+    outTorque[2] = obj.accumulatedTorque.z;
+  }
+
+  if(clearAfterRead) {
+    obj.accumulatedForce = make_float3(0, 0, 0);
+    obj.accumulatedTorque = make_float3(0, 0, 0);
+  }
+
+  return true;
+}
+
+void DsphStepEngine::ClearBoundaryForces(unsigned int boundaryId) {
+  if(boundaryId >= BoundaryCount) return;
+
+  StDsphBoundaryObject& obj = BoundaryObjects[boundaryId];
+  obj.accumulatedForce = make_float3(0, 0, 0);
+  obj.accumulatedTorque = make_float3(0, 0, 0);
+}
+
+bool DsphStepEngine::GetBoundaryState(
+    unsigned int boundaryId,
+    float* outPosition,
+    float* outVelocity,
+    float* outOrientation,
+    float* outAngularVelocity)
+{
+  if(boundaryId >= BoundaryCount) return false;
+
+  const StDsphBoundaryObject& obj = BoundaryObjects[boundaryId];
+  if(!obj.isActive) return false;
+
+  if(outPosition) {
+    outPosition[0] = obj.position.x;
+    outPosition[1] = obj.position.y;
+    outPosition[2] = obj.position.z;
+  }
+  if(outVelocity) {
+    outVelocity[0] = obj.velocity.x;
+    outVelocity[1] = obj.velocity.y;
+    outVelocity[2] = obj.velocity.z;
+  }
+  if(outOrientation) {
+    outOrientation[0] = obj.orientation.x;
+    outOrientation[1] = obj.orientation.y;
+    outOrientation[2] = obj.orientation.z;
+    outOrientation[3] = obj.orientation.w;
+  }
+  if(outAngularVelocity) {
+    outAngularVelocity[0] = obj.angularVelocity.x;
+    outAngularVelocity[1] = obj.angularVelocity.y;
+    outAngularVelocity[2] = obj.angularVelocity.z;
+  }
+
+  return true;
 }
 
 #endif // _WITHGPU

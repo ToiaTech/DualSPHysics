@@ -86,6 +86,42 @@ void SimpleSymplecticCor(
   float rho0,
   cudaStream_t stm = nullptr);
 
+//==============================================================================
+// Dynamic Boundary Transformation Kernels
+//==============================================================================
+
+/// Transform boundary particles from local (CoM-relative) to world coordinates.
+/// Uses quaternion rotation + translation to compute world positions.
+/// Also computes particle velocities from rigid body motion: v = v_linear + omega x r
+void TransformBoundaryParticles(
+  unsigned int count,
+  const float3* localPos,         // Local positions (relative to CoM)
+  const float3* localNorm,        // Local normals (optional, can be nullptr)
+  float3 comPosition,             // Center of mass world position
+  float4 orientation,             // Rotation quaternion (x,y,z,w)
+  float3 linearVel,               // Linear velocity
+  float3 angularVel,              // Angular velocity
+  float3* worldPos,               // Output: world positions
+  float3* worldNorm,              // Output: world normals (optional, can be nullptr)
+  float3* particleVel,            // Output: particle velocities
+  cudaStream_t stm = nullptr);
+
+/// Accumulate fluid forces acting on a boundary object.
+/// Reads from SPH acceleration array and computes total force/torque.
+void AccumulateBoundaryForces(
+  unsigned int particleStart,     // First particle index in boundary arrays
+  unsigned int particleCount,     // Number of particles
+  const float3* worldPos,         // World positions
+  float3 comPosition,             // Center of mass
+  const float3* ace,              // Acceleration array (from SPH)
+  float particleMass,             // Mass per particle
+  float3* outForce,               // Output: accumulated force (device ptr, single value)
+  float3* outTorque,              // Output: accumulated torque (device ptr, single value)
+  cudaStream_t stm = nullptr);
+
+/// Zero a float3 value on device
+void ZeroFloat3(float3* ptr, cudaStream_t stm = nullptr);
+
 } // namespace dsphker
 
 #endif // _DsphStepEngine_ker_

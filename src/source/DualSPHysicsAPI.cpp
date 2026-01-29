@@ -1281,34 +1281,54 @@ DUALSPH_CAPI int DsphAddDynamicBoundary(
     const float* centerOfMass,
     int isDynamic)
 {
-  if(!handle || !positions || count == 0) {
+  if(!handle || !positions || count == 0 || !centerOfMass) {
     SetError("Invalid parameters");
     return DSPH_ERROR_INVALID_PARAM;
   }
-  if(handle->prepared) {
-    SetError("Cannot add boundaries after preparation");
-    return DSPH_ERROR_ALREADY_PREPARED;
+
+#ifdef _WITHGPU
+  if(handle->prepared && handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    // After preparation: use step engine's dynamic boundary support
+    int boundaryId = handle->stepEngine->AddBoundaryObject(
+      positions,
+      normals,
+      count,
+      mass,
+      inertia,
+      centerOfMass,
+      isDynamic != 0
+    );
+
+    if(boundaryId < 0) {
+      SetError("Failed to add dynamic boundary (limit reached or allocation failed)");
+      return DSPH_ERROR_BOUNDARY_LIMIT;
+    }
+
+    return boundaryId;
+  }
+#endif
+
+  // Before preparation: store as static boundary particles
+  // Dynamic boundaries should be added AFTER preparation for full functionality
+  if(!handle->prepared) {
+    // Convert float positions to double for existing API
+    std::vector<double> posDouble(count * 3);
+    std::vector<double> normDouble(count * 3);
+    for(unsigned int i = 0; i < count * 3; i++) {
+      posDouble[i] = static_cast<double>(positions[i]);
+      normDouble[i] = normals ? static_cast<double>(normals[i]) : 0.0;
+    }
+
+    int result = DsphAddBoundaryParticles(handle, posDouble.data(),
+                                           normals ? normDouble.data() : nullptr, count);
+    if(result != DSPH_SUCCESS) return result;
+
+    // Return 0 as static boundary ID (no dynamic features)
+    return 0;
   }
 
-  // NOTE: Full dynamic boundary support requires integration with floating body
-  // infrastructure in DualSPHysics. This is a placeholder that adds particles
-  // as standard boundary particles for now.
-
-  // Convert float positions to double for existing API
-  std::vector<double> posDouble(count * 3);
-  std::vector<double> normDouble(count * 3);
-  for(unsigned int i = 0; i < count * 3; i++) {
-    posDouble[i] = static_cast<double>(positions[i]);
-    normDouble[i] = normals ? static_cast<double>(normals[i]) : 0.0;
-  }
-
-  int result = DsphAddBoundaryParticles(handle, posDouble.data(),
-                                         normals ? normDouble.data() : nullptr, count);
-  if(result != DSPH_SUCCESS) return result;
-
-  // Return boundary ID (would be used for force retrieval once fully implemented)
-  // For now, return 0 as the first/only dynamic boundary
-  return 0;
+  SetError("GPU not available for dynamic boundary");
+  return DSPH_ERROR_NO_GPU;
 }
 
 DUALSPH_CAPI int DsphGetBoundaryCount(DsphSimHandle handle) {
@@ -1316,8 +1336,14 @@ DUALSPH_CAPI int DsphGetBoundaryCount(DsphSimHandle handle) {
     SetError("Invalid simulation handle");
     return DSPH_ERROR_INVALID_PARAM;
   }
-  // Return 1 if we have boundary particles, 0 otherwise
-  // Full implementation would track separate dynamic boundary objects
+
+#ifdef _WITHGPU
+  if(handle->prepared && handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    return (int)handle->stepEngine->GetBoundaryCount();
+  }
+#endif
+
+  // Fallback: return 1 if we have boundary particles, 0 otherwise
   return (handle->boundaryParticles > 0) ? 1 : 0;
 }
 
@@ -1335,19 +1361,33 @@ DUALSPH_CAPI int DsphGetBoundaryForces(
     SetError("Simulation not prepared");
     return DSPH_ERROR_NOT_PREPARED;
   }
-  if(boundaryId < 0 || boundaryId >= DsphGetBoundaryCount(handle)) {
-    SetError("Invalid boundary ID");
-    return DSPH_ERROR_INVALID_BOUNDARY;
+
+#ifdef _WITHGPU
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    if(boundaryId < 0 || (unsigned int)boundaryId >= handle->stepEngine->GetBoundaryCount()) {
+      SetError("Invalid boundary ID");
+      return DSPH_ERROR_INVALID_BOUNDARY;
+    }
+
+    bool success = handle->stepEngine->GetBoundaryForces(
+      (unsigned int)boundaryId,
+      outForce,
+      outTorque,
+      true  // clearAfterRead
+    );
+
+    if(!success) {
+      SetError("Failed to get boundary forces");
+      return DSPH_ERROR_INVALID_BOUNDARY;
+    }
+
+    return DSPH_SUCCESS;
   }
+#endif
 
-  // NOTE: Full force accumulation requires modifications to the SPH interaction
-  // kernel. This is a placeholder that returns zero forces.
-  // The DualSPHysics floating body infrastructure (StFloatingData) already
-  // computes fluforcelin/fluforceang - this needs to be exposed via API.
-
+  // No dynamic boundaries on CPU - return zeros
   outForce[0] = outForce[1] = outForce[2] = 0.0f;
   outTorque[0] = outTorque[1] = outTorque[2] = 0.0f;
-
   return DSPH_SUCCESS;
 }
 
@@ -1357,8 +1397,42 @@ DUALSPH_CAPI int DsphPeekBoundaryForces(
     float* outForce,
     float* outTorque)
 {
-  // Same as GetBoundaryForces but doesn't clear (not implemented yet anyway)
-  return DsphGetBoundaryForces(handle, boundaryId, outForce, outTorque);
+  if(!handle || !outForce || !outTorque) {
+    SetError("Invalid parameters");
+    return DSPH_ERROR_INVALID_PARAM;
+  }
+  if(!handle->prepared) {
+    SetError("Simulation not prepared");
+    return DSPH_ERROR_NOT_PREPARED;
+  }
+
+#ifdef _WITHGPU
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    if(boundaryId < 0 || (unsigned int)boundaryId >= handle->stepEngine->GetBoundaryCount()) {
+      SetError("Invalid boundary ID");
+      return DSPH_ERROR_INVALID_BOUNDARY;
+    }
+
+    bool success = handle->stepEngine->GetBoundaryForces(
+      (unsigned int)boundaryId,
+      outForce,
+      outTorque,
+      false  // don't clear after read
+    );
+
+    if(!success) {
+      SetError("Failed to peek boundary forces");
+      return DSPH_ERROR_INVALID_BOUNDARY;
+    }
+
+    return DSPH_SUCCESS;
+  }
+#endif
+
+  // No dynamic boundaries on CPU - return zeros
+  outForce[0] = outForce[1] = outForce[2] = 0.0f;
+  outTorque[0] = outTorque[1] = outTorque[2] = 0.0f;
+  return DSPH_SUCCESS;
 }
 
 DUALSPH_CAPI int DsphClearBoundaryForces(DsphSimHandle handle, int boundaryId) {
@@ -1366,7 +1440,15 @@ DUALSPH_CAPI int DsphClearBoundaryForces(DsphSimHandle handle, int boundaryId) {
     SetError("Invalid simulation handle");
     return DSPH_ERROR_INVALID_PARAM;
   }
-  // No-op for now since force accumulation not implemented
+
+#ifdef _WITHGPU
+  if(handle->prepared && handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    if(boundaryId >= 0 && (unsigned int)boundaryId < handle->stepEngine->GetBoundaryCount()) {
+      handle->stepEngine->ClearBoundaryForces((unsigned int)boundaryId);
+    }
+  }
+#endif
+
   return DSPH_SUCCESS;
 }
 
@@ -1386,15 +1468,33 @@ DUALSPH_CAPI int DsphUpdateBoundaryState(
     SetError("Simulation not prepared");
     return DSPH_ERROR_NOT_PREPARED;
   }
-  if(boundaryId < 0 || boundaryId >= DsphGetBoundaryCount(handle)) {
-    SetError("Invalid boundary ID");
-    return DSPH_ERROR_INVALID_BOUNDARY;
-  }
 
-  // NOTE: Dynamic boundary state updates require GPU kernel for particle
-  // transformation. This is a placeholder - full implementation needed.
-  SetError("Dynamic boundary state updates not yet fully implemented");
-  return DSPH_ERROR_NOT_IMPLEMENTED;
+#ifdef _WITHGPU
+  if(handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    if(boundaryId < 0 || (unsigned int)boundaryId >= handle->stepEngine->GetBoundaryCount()) {
+      SetError("Invalid boundary ID");
+      return DSPH_ERROR_INVALID_BOUNDARY;
+    }
+
+    bool success = handle->stepEngine->UpdateBoundaryState(
+      (unsigned int)boundaryId,
+      position,
+      velocity,
+      orientation,
+      angularVelocity
+    );
+
+    if(!success) {
+      SetError("Failed to update boundary state");
+      return DSPH_ERROR_INVALID_BOUNDARY;
+    }
+
+    return DSPH_SUCCESS;
+  }
+#endif
+
+  SetError("Dynamic boundary state updates require GPU");
+  return DSPH_ERROR_NO_GPU;
 }
 
 DUALSPH_CAPI int DsphUpdateBoundaryStateMatrix(
@@ -1404,15 +1504,61 @@ DUALSPH_CAPI int DsphUpdateBoundaryStateMatrix(
     const float* velocity,
     const float* angularVelocity)
 {
-  if(!handle) {
-    SetError("Invalid simulation handle");
+  if(!handle || !transform) {
+    SetError("Invalid parameters");
     return DSPH_ERROR_INVALID_PARAM;
   }
 
-  // Convert matrix to quaternion and call quaternion version
-  // For now, return not implemented
-  SetError("Matrix-based boundary update not yet implemented");
-  return DSPH_ERROR_NOT_IMPLEMENTED;
+  // Extract position from 4x4 matrix (last column)
+  float position[3] = { transform[12], transform[13], transform[14] };
+
+  // Convert rotation matrix to quaternion
+  // Using Shepperd's method for numerical stability
+  float m00 = transform[0], m01 = transform[4], m02 = transform[8];
+  float m10 = transform[1], m11 = transform[5], m12 = transform[9];
+  float m20 = transform[2], m21 = transform[6], m22 = transform[10];
+
+  float trace = m00 + m11 + m22;
+  float orientation[4];
+
+  if(trace > 0) {
+    float s = 0.5f / sqrtf(trace + 1.0f);
+    orientation[3] = 0.25f / s;  // w
+    orientation[0] = (m21 - m12) * s;  // x
+    orientation[1] = (m02 - m20) * s;  // y
+    orientation[2] = (m10 - m01) * s;  // z
+  } else if(m00 > m11 && m00 > m22) {
+    float s = 2.0f * sqrtf(1.0f + m00 - m11 - m22);
+    orientation[3] = (m21 - m12) / s;
+    orientation[0] = 0.25f * s;
+    orientation[1] = (m01 + m10) / s;
+    orientation[2] = (m02 + m20) / s;
+  } else if(m11 > m22) {
+    float s = 2.0f * sqrtf(1.0f + m11 - m00 - m22);
+    orientation[3] = (m02 - m20) / s;
+    orientation[0] = (m01 + m10) / s;
+    orientation[1] = 0.25f * s;
+    orientation[2] = (m12 + m21) / s;
+  } else {
+    float s = 2.0f * sqrtf(1.0f + m22 - m00 - m11);
+    orientation[3] = (m10 - m01) / s;
+    orientation[0] = (m02 + m20) / s;
+    orientation[1] = (m12 + m21) / s;
+    orientation[2] = 0.25f * s;
+  }
+
+  // Normalize quaternion
+  float len = sqrtf(orientation[0]*orientation[0] + orientation[1]*orientation[1] +
+                    orientation[2]*orientation[2] + orientation[3]*orientation[3]);
+  if(len > 0) {
+    orientation[0] /= len;
+    orientation[1] /= len;
+    orientation[2] /= len;
+    orientation[3] /= len;
+  }
+
+  return DsphUpdateBoundaryState(handle, boundaryId, position, velocity,
+                                  orientation, angularVelocity);
 }
 
 DUALSPH_CAPI int DsphGetBoundaryState(
@@ -1427,12 +1573,32 @@ DUALSPH_CAPI int DsphGetBoundaryState(
     SetError("Invalid simulation handle");
     return DSPH_ERROR_INVALID_PARAM;
   }
-  if(boundaryId < 0 || boundaryId >= DsphGetBoundaryCount(handle)) {
-    SetError("Invalid boundary ID");
-    return DSPH_ERROR_INVALID_BOUNDARY;
-  }
 
-  // Return identity state for now
+#ifdef _WITHGPU
+  if(handle->prepared && handle->deviceType == DSPH_DEVICE_GPU && handle->stepEngine) {
+    if(boundaryId < 0 || (unsigned int)boundaryId >= handle->stepEngine->GetBoundaryCount()) {
+      SetError("Invalid boundary ID");
+      return DSPH_ERROR_INVALID_BOUNDARY;
+    }
+
+    bool success = handle->stepEngine->GetBoundaryState(
+      (unsigned int)boundaryId,
+      outPosition,
+      outVelocity,
+      outOrientation,
+      outAngularVelocity
+    );
+
+    if(!success) {
+      SetError("Failed to get boundary state");
+      return DSPH_ERROR_INVALID_BOUNDARY;
+    }
+
+    return DSPH_SUCCESS;
+  }
+#endif
+
+  // Return identity state for CPU fallback
   if(outPosition) { outPosition[0] = outPosition[1] = outPosition[2] = 0.0f; }
   if(outVelocity) { outVelocity[0] = outVelocity[1] = outVelocity[2] = 0.0f; }
   if(outOrientation) {
