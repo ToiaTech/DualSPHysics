@@ -42,6 +42,12 @@
 #include <cmath>
 
 //==============================================================================
+// Global AppInfo definition for DLL build
+// (In the standalone executable, this is defined in main.cpp)
+//==============================================================================
+JAppInfo AppInfo("DualSPHysics5","v5.4.355","08-04-2025");
+
+//==============================================================================
 // Internal state
 //==============================================================================
 namespace {
@@ -321,7 +327,7 @@ DUALSPH_CAPI int DsphIsInitialized(void) {
 DUALSPH_CAPI int DsphGetGpuCount(void) {
 #ifdef _WITHGPU
   try {
-    return fcuda::GetCudaDevicesCount();
+    return fcuda::GetCudaDevicesInfo(nullptr, nullptr);
   }
   catch(...) {
     return 0;
@@ -336,13 +342,13 @@ DUALSPH_CAPI int DsphGetGpuInfo(int gpuId, char* nameBuffer, int nameBufferSize,
                                 int* totalMemoryMB) {
 #ifdef _WITHGPU
   try {
-    int deviceCount = fcuda::GetCudaDevicesCount();
+    int deviceCount = fcuda::GetCudaDevicesInfo(nullptr, nullptr);
     if(gpuId < 0 || gpuId >= deviceCount) {
       SetError("Invalid GPU ID");
       return DSPH_ERROR_INVALID_PARAM;
     }
 
-    fcuda::StCudaDeviceInfo info = fcuda::GetCudaDeviceInfo(gpuId);
+    fcuda::StGpuInfo info = fcuda::GetCudaDeviceInfo(gpuId);
 
     if(nameBuffer && nameBufferSize > 0) {
       strncpy(nameBuffer, info.name.c_str(), nameBufferSize - 1);
