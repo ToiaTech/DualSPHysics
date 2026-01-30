@@ -44,6 +44,11 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <!-- Conditional library dependencies based on feature flags -->
+  <PropertyGroup>
+    <ChronoLib Condition="$(PreprocessorDefinitions.Contains('_WITHCHRONO'))">dsphchrono.lib;</ChronoLib>
+    <ChronoLib Condition="!$(PreprocessorDefinitions.Contains('_WITHCHRONO'))"></ChronoLib>
+  </PropertyGroup>
   <PropertyGroup>
     <_ProjectFileVersion>10.0.30319.1</_ProjectFileVersion>
     <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">../../bin/windows/</OutDir>
@@ -61,7 +66,7 @@
       <EnableFiberSafeOptimizations>false</EnableFiberSafeOptimizations>
       <WholeProgramOptimization>false</WholeProgramOptimization>
       <AdditionalIncludeDirectories>$(CUDA_PATH_V12_8)/include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>DUALSPHYSICS_DLL;DUALSPHYSICS_DLL_EXPORT;_WITHGPU;WIN32;_WITHMR;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>DUALSPHYSICS_DLL;DUALSPHYSICS_DLL_EXPORT;_WITHGPU;WIN32;_WITHMR;DISABLE_CHRONO;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
@@ -72,7 +77,7 @@
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>cudart_static.lib;dsphchrono.lib;LibJWaveGen_$(PlatformName)_$(PlatformToolset)_$(Configuration).lib;LibDSphMoorDynPlus_$(PlatformName)_$(PlatformToolset)_$(Configuration).lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>cudart_static.lib;$(ChronoLib)LibJWaveGen_$(PlatformName)_$(PlatformToolset)_$(Configuration).lib;LibDSphMoorDynPlus_$(PlatformName)_$(PlatformToolset)_$(Configuration).lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(TargetPath)</OutputFile>
       <AdditionalLibraryDirectories>$(CUDA_PATH_V12_8)/lib/$(PlatformName);../lib/vs2022;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <GenerateDebugInformation>false</GenerateDebugInformation>
@@ -86,15 +91,15 @@
       <UseHostInclude>false</UseHostInclude>
       <AdditionalOptions>-use_fast_math -Xcompiler "/wd 4267" -Wno-deprecated-gpu-targets -DCUB_IGNORE_DEPRECATED_CPP_DIALECT -DTHRUST_IGNORE_DEPRECATED_CPP_DIALECT %(AdditionalOptions)</AdditionalOptions>
       <CodeGeneration>compute_61,sm_61;compute_70,sm_70;compute_86,sm_86</CodeGeneration>
-      <Defines>DUALSPHYSICS_DLL;DUALSPHYSICS_DLL_EXPORT</Defines>
+      <Defines>DUALSPHYSICS_DLL;DUALSPHYSICS_DLL_EXPORT;_WITHGPU;_WITHMR;DISABLE_CHRONO</Defines>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
       <AdditionalIncludeDirectories>$(CUDA_PATH_V12_8)/include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>DUALSPHYSICS_DLL;DUALSPHYSICS_DLL_EXPORT;_WITHGPU;WIN32;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <PreprocessorDefinitions>DUALSPHYSICS_DLL;DUALSPHYSICS_DLL_EXPORT;_WITHGPU;WIN32;_WITHMR;DISABLE_CHRONO;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
@@ -102,9 +107,10 @@
       <CompileAs>CompileAsCpp</CompileAs>
       <MinimalRebuild>true</MinimalRebuild>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>cudart_static.lib;dsphchrono.lib;LibJWaveGen_$(PlatformName)_$(PlatformToolset)_$(Configuration).lib;LibDSphMoorDynPlus_$(PlatformName)_$(PlatformToolset)_$(Configuration).lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>cudart_static.lib;$(ChronoLib)LibJWaveGen_$(PlatformName)_$(PlatformToolset)_$(Configuration).lib;LibDSphMoorDynPlus_$(PlatformName)_$(PlatformToolset)_$(Configuration).lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(TargetPath)</OutputFile>
       <AdditionalLibraryDirectories>$(CUDA_PATH_V12_8)/lib/$(PlatformName);../lib/vs2022;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -116,7 +122,7 @@
       <UseHostInclude>false</UseHostInclude>
       <AdditionalOptions>-use_fast_math -Xcompiler "/wd 4267" -Wno-deprecated-gpu-targets %(AdditionalOptions)</AdditionalOptions>
       <CodeGeneration>compute_61,sm_61;compute_70,sm_70;compute_86,sm_86</CodeGeneration>
-      <Defines>DUALSPHYSICS_DLL;DUALSPHYSICS_DLL_EXPORT</Defines>
+      <Defines>DUALSPHYSICS_DLL;DUALSPHYSICS_DLL_EXPORT;_WITHGPU;_WITHMR;DISABLE_CHRONO</Defines>
     </CudaCompile>
   </ItemDefinitionGroup>
   <!-- CUDA Kernel Files -->
