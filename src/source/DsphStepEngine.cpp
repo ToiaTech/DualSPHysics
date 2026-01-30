@@ -20,9 +20,15 @@
 
 #ifdef _WITHGPU
 
+// Prevent Windows min/max macros from conflicting with std::min/std::max
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "DsphStepEngine.h"
 #include "DsphStepEngine_ker.h"
 #include "FunSphKernelsCfg.h"
+#include "FunSphKernel.h"
 #include "FunSphMultiFluid_iker.h"
 #include "Functions.h"
 #include "FunctionsCuda.h"
@@ -175,17 +181,21 @@ void DsphStepEngine::FreeGpuMemory() {
 void DsphStepEngine::ComputeConstants() {
   double dp = Config.dp;
 
-  // Kernel constants
-  if(Config.kernel == KERNEL_Wendland) {
-    Config.kwend = fsph::GetKernelWendland(Config.simulate2D ? 2 : 3, float(dp));
-    Config.kernelH = Config.kwend.h;
-    Config.kernelSize = Config.kwend.kernelsize;
-  } else {
-    Config.kcubic = fsph::GetKernelCubic(Config.simulate2D ? 2 : 3, float(dp));
-    Config.kernelH = Config.kcubic.h;
-    Config.kernelSize = Config.kcubic.kernelsize;
-  }
+  // Compute kernel H and size from dp
+  // h = dp * kernelFactor (where kernelFactor is 2.0 for both Wendland and Cubic)
+  // kernelSize = h * kernelFactor = dp * kernelFactor^2 / 2 * 2 = dp * kernelFactor
+  float kernelFactor = fsph::GetKernelFactor(Config.kernel);
+  Config.kernelH = float(dp * kernelFactor / 2.0);  // h = coef * sqrt(dp^2 * 3) simplified for uniform spacing
+  Config.kernelSize = Config.kernelH * kernelFactor;
   Config.kernelSize2 = Config.kernelSize * Config.kernelSize;
+
+  // Kernel constants
+  bool sim2d = Config.simulate2D;
+  if(Config.kernel == KERNEL_Wendland) {
+    Config.kwend = fsph::GetKernelWendland_Ctes(sim2d, Config.kernelH);
+  } else {
+    Config.kcubic = fsph::GetKernelCubic_Ctes(sim2d, Config.kernelH);
+  }
 
   // Mass calculation
   double volume = dp * dp * dp;
@@ -359,7 +369,7 @@ bool DsphStepEngine::Initialize(const StDsphEngineConfig& config,
     // Boundary particles first (indices 0 to Npb-1)
     for(unsigned int i = 0; i < Npb; i++) {
       idp[idx] = idx;
-      code[idx] = CODE_SetType(0, CODE_TYPE_FIXED);  // Fixed boundary
+      code[idx] = typecode(CODE_TYPE_FIXED);  // Fixed boundary
 
       posxy[idx].x = boundPos[i * 3 + 0];
       posxy[idx].y = boundPos[i * 3 + 1];
@@ -385,7 +395,7 @@ bool DsphStepEngine::Initialize(const StDsphEngineConfig& config,
     // Fluid particles (indices Npb to Np-1)
     for(unsigned int i = 0; i < Npf; i++) {
       idp[idx] = idx;
-      code[idx] = CODE_SetType(0, CODE_TYPE_FLUID);
+      code[idx] = typecode(CODE_TYPE_FLUID);
 
       posxy[idx].x = fluidPos[i * 3 + 0];
       posxy[idx].y = fluidPos[i * 3 + 1];
