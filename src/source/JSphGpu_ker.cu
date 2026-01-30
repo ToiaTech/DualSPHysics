@@ -1031,6 +1031,7 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
       ,float2*,const float3*,const float4*,const float4*,const typecode*
       ,const unsigned*
       ,const byte*,const float3*,const float3*,const float3* //<vs_m2dbc>
+      ,const unsigned char*  //-Multi-fluid: fluidtypeg
       ,float*,float*,float3*,float*,TpShifting,float4*,float4*
       ,unsigned*,const float4*,bool,bool    //<vs_advshift>
       ,const float*,float*,float*,float); //<vs_divclean>
@@ -1047,7 +1048,9 @@ template<TpKernel tker,TpFtMode ftmode,TpVisco tvisco,TpDensity tdensity
   {
     typedef void (*fun_ptr)(unsigned,unsigned,int,int4,int3,const int2*
       ,const unsigned*,const float*,const float4*,const float4*
-      ,const typecode*,const unsigned*,float*,float*);
+      ,const typecode*,const unsigned*
+      ,const unsigned char*  //-Multi-fluid: fluidtypeg
+      ,float*,float*);
     fun_ptr ptr=&KerInteractionForcesBound<tker,ftmode>;
     int qblocksize=0,mingridsize=0;
     cudaOccupancyMaxPotentialBlockSize(&mingridsize,&qblocksize,(void*)ptr,0,0);
